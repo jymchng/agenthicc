@@ -21,15 +21,15 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import ConversationStore
 
 WAKE_TURN_PREFIX = "subagent-wake:"
-SUBAGENT_NOTICE_SOURCES = ("subagent_completion", "subagent_question", "subagent_message")
+SUBAGENT_NOTICE_SOURCES = ("subagent_worker", "subagent_question", "subagent_message")
 
 __all__ = [
     "NoticeSource",
     "PendingNotice",
-    "background_pool_notice",
     "background_question_notice",
-    "deliver_background_pool_notices",
+    "background_worker_notice",
     "deliver_background_question_notices",
+    "deliver_background_worker_notices",
     "deliver_session_background_notices",
 ]
 
@@ -39,7 +39,7 @@ class PendingNotice:
     """A runtime-authored notice with any worker content marked as untrusted."""
 
     message_id: str
-    kind: Literal["completion", "question", "message"]
+    kind: Literal["worker", "question", "message"]
     pool_id: str
     text: str
     summary: str = ""
@@ -67,22 +67,35 @@ def _count(record: Mapping[str, object], key: str) -> int:
 def _status_text(status: str) -> str:
     if status == "completed":
         return "completed"
+    if status == "failed":
+        return "failed"
     if status == "interrupted":
         return "was interrupted when the session stopped"
     if status == "cancelled":
-        return "was cancelled when the session closed"
+        return "was stopped"
     return "finished"
 
 
-def background_pool_notice(record: Mapping[str, object]) -> str:
-    """Compose a completion notice without reading worker output."""
+def background_worker_notice(record: Mapping[str, object]) -> str:
+    """Compose one worker's finish notice without reading its output.
+
+    The label is authored by the pool, never by the worker. The result is pulled
+    through ``collect_subagent_results``, which returns it as a tool result.
+    """
     pool_id = str(record.get("pool_id", ""))[:128]
-    status = str(record.get("status", "interrupted"))
+    label = " ".join(str(record.get("label", "")).split())[:64] or "worker"
+    status = str(record.get("status") or ("completed" if record.get("ok") is True else "failed"))
+    finished, total = _count(record, "finished"), _count(record, "total")
+    progress = (
+        f"{finished}/{total} workers of this pool have finished"
+        + ("; the pool is complete" if record.get("pool_complete") is True else "")
+        if total
+        else "the pool's other workers may still be running"
+    )
     return (
-        f"Background subagent pool {pool_id} {_status_text(status)} "
-        f"({_count(record, 'succeeded')}/{_count(record, 'total')} succeeded, "
-        f"{_count(record, 'failed')} failed). Its results are not included here: "
-        f'call collect_subagent_results(pool_id="{pool_id}") to read them.'
+        f"Background subagent {label} of pool {pool_id} {_status_text(status)} ({progress}). "
+        "Its result is not included here: call "
+        f'collect_subagent_results(pool_id="{pool_id}") to read the finished results.'
     )
 
 
@@ -96,41 +109,59 @@ def background_question_notice(pool_id: str, worker_id: str, question_id: str) -
     )
 
 
-def _completions(
+def _worker_results(
     journal: ConversationJournal,
     owner: PhaseOwner | None = None,
     registry: PoolContinuationRegistry | None = None,
 ) -> tuple[PendingNotice, ...]:
     notices: list[PendingNotice] = []
     collected = journal.collected_phase_pools(owner.invocation) if owner is not None else ()
-    for record in journal.completed_background_subagent_pools():
+    for record in journal.undelivered_subagent_worker_results():
         if not phase_pool_matches(record, owner) or record.get("pool_id") in collected:
             continue
-        pool_id = record.get("pool_id")
-        if not isinstance(pool_id, str) or not pool_id:
+        pool_id, task_id = record.get("pool_id"), record.get("task_id")
+        message_id = record.get("message_id")
+        if not (
+            isinstance(pool_id, str)
+            and isinstance(task_id, str)
+            and isinstance(message_id, str)
+            and pool_id
+            and task_id
+        ):
             continue
-        if owner is not None and registry is not None:
+        if record.get("pool_complete") is True and registry is not None:
             handle = registry.get(pool_id)
             if handle is not None and not handle.task.done():
-                # The journal can be terminal while the pool still cleans up its
-                # worktrees. Wait until collection can return its terminal result.
+                # The last result can be durable while the pool still cleans up
+                # its worktrees. Wait until collection can return the whole pool.
                 continue
-        succeeded = _count(record, "succeeded")
-        total = _count(record, "total")
-        status = str(record.get("status", "interrupted"))
-        label = {
-            "interrupted": "Subagents interrupted",
-            "cancelled": "Subagents cancelled",
-        }.get(status, "Subagents finished")
+        attempt = record.get("attempt", 1)
+        label = " ".join(str(record.get("label", "")).split())[:64] or task_id[:64]
+        status = str(
+            record.get("status") or ("completed" if record.get("ok") is True else "failed")
+        )
         at = record.get("at")
+        summary_status = {
+            "interrupted": "interrupted",
+            "cancelled": "stopped",
+            "failed": "failed",
+        }.get(status, "finished")
         notices.append(
             PendingNotice(
-                f"subagent-completion:{pool_id}",
-                "completion",
+                message_id,
+                "worker",
                 pool_id,
-                background_pool_notice(record),
-                f"{label} — pool {pool_id[:8]} · {succeeded}/{total} succeeded",
+                background_worker_notice(record),
+                f"Subagent {summary_status} — {label} · pool {pool_id[:8]} · "
+                f"{_count(record, 'finished')}/{_count(record, 'total')}",
                 float(at) if isinstance(at, (float, int)) else 0.0,
+                partial(
+                    journal.subagent_worker_notification_delivered,
+                    pool_id=pool_id,
+                    task_id=task_id,
+                    attempt=attempt if isinstance(attempt, int) else 1,
+                    message_id=message_id,
+                ),
             )
         )
     return tuple(notices)
@@ -223,7 +254,7 @@ class JournalNoticeSource:
         return tuple(
             sorted(
                 (
-                    *_completions(self.journal, self.phase_owner, self.registry),
+                    *_worker_results(self.journal, self.phase_owner, self.registry),
                     *_questions(self.registry, self.journal, self.phase_owner),
                     *_messages(self.journal, self.registry, self.phase_owner),
                 ),
@@ -255,23 +286,19 @@ def deliver_notices(
             )
         if notice.on_persisted is not None:
             notice.on_persisted()
-        if notice.kind == "completion":
-            memory.journal.subagent_pool_notification_delivered(
-                pool_id=notice.pool_id, message_id=notice.message_id
-            )
     if notices and conversation is not None:
-        conversation.subagent_finished_pending.set(len(_completions(memory.journal)))
+        conversation.subagent_finished_pending.set(len(_worker_results(memory.journal)))
 
 
-def deliver_background_pool_notices(
+def deliver_background_worker_notices(
     journal: ConversationJournal,
     memory: JournaledShortTermMemory,
     conversation: ConversationStore | None = None,
 ) -> tuple[str, ...]:
-    """Deliver undelivered terminal pools and return the pool IDs."""
-    notices = _completions(journal)
+    """Deliver the notice of every finished, undelivered worker; return their IDs."""
+    notices = _worker_results(journal)
     deliver_notices(notices, memory, conversation)
-    return tuple(notice.pool_id for notice in notices)
+    return tuple(notice.message_id for notice in notices)
 
 
 def deliver_background_question_notices(
@@ -286,7 +313,7 @@ def deliver_background_question_notices(
 
 
 def deliver_session_background_notices(session: SessionContext) -> tuple[str, ...]:
-    """Deliver terminal background pools at a non-interactive turn boundary."""
+    """Deliver finished background workers at a non-interactive turn boundary."""
     from agenthicc.memory.journaled import JournaledShortTermMemory
 
     conversation: SessionConversation | None = session.session_conversation
@@ -296,6 +323,6 @@ def deliver_session_background_notices(session: SessionContext) -> tuple[str, ..
     if not isinstance(memory, JournaledShortTermMemory):
         return ()
     deliver_notices(_messages(conversation.journal), memory, session.app_state.conversation)
-    return deliver_background_pool_notices(
+    return deliver_background_worker_notices(
         conversation.journal, memory, session.app_state.conversation
     )

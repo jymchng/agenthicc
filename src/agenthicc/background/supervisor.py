@@ -23,6 +23,7 @@ from .model import (
     ACTIVE_STATUSES,
     BackgroundSession,
     LaunchSpec,
+    LiveHandoff,
     ModeApplicationStatus,
     QueueDispatchState,
     QueuePriority,
@@ -50,11 +51,15 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .settings import BackgroundNotificationSettings, BackgroundSettings
-    from agenthicc.runners.session_lease import SessionOwnerLease
+    from agenthicc.runners.session_lease import SessionOwnerInfo, SessionOwnerLease
 
 
 class QueueFullError(RuntimeError):
     """Admission was rejected because the durable pending queue is bounded."""
+
+
+class LiveControllerInputPending(InvalidSessionTransition):
+    """Accepted input must reach the runtime before controller authority changes."""
 
 
 #: The launch configuration of a session started without flags.
@@ -527,6 +532,20 @@ class BackgroundSupervisor:
             _apply_cli_secret_overrides({}, list(launch.set_secret_overrides))
         except ValueError as exc:
             raise LaunchPreflightError(f"{action} has an invalid override: {exc}") from exc
+
+    @staticmethod
+    def launch_interactive_runtime(bootstrap: Path) -> subprocess.Popen[bytes]:
+        """Start the eventual writer with no dependency on the controller TTY."""
+
+        detached_process = 0x00000008  # Win32 CreateProcess DETACHED_PROCESS
+        return subprocess.Popen(
+            [sys.executable, "-m", "agenthicc.runners.hosted_session", str(bootstrap)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(os.name != "nt"),
+            creationflags=detached_process if os.name == "nt" else 0,
+        )
 
     def _worker_command(self, request_path: Path) -> list[str]:
         return [
@@ -1126,6 +1145,161 @@ class BackgroundSupervisor:
             and payload.get("process_start_token") == lease.info.process_start_token
         )
 
+    @staticmethod
+    def _verify_live_owner(lease: SessionOwnerLease) -> SessionOwnerInfo:
+        from agenthicc.runners.session_lease import SessionOwnerInfo
+
+        owner = lease.info
+        persisted = SessionOwnerInfo.from_mapping(
+            read_json_object(lease.path), session_id=lease.session_id
+        )
+        if (
+            lease.released
+            or owner.pid != os.getpid()
+            or persisted != owner
+            or owner.entrypoint != "hosted-tui"
+            or not owner.process_start_token
+        ):
+            raise InvalidSessionTransition("Hosted runtime does not own the session lease")
+        return owner
+
+    def prepare_live_handoff(
+        self,
+        lease: SessionOwnerLease,
+        record: BackgroundSession,
+        *,
+        launch: LaunchSpec,
+        request_id: str,
+        generation: int,
+        accepted_sequence: int,
+        now: float,
+    ) -> LiveHandoff:
+        """Authenticate the runtime and reserve canonical dispatch capacity."""
+
+        owner = self._verify_live_owner(lease)
+        if record.session_id != owner.session_id:
+            raise InvalidSessionTransition("Handoff targets a different session lease")
+        handoff = LiveHandoff.from_mapping(
+            {
+                "owner_id": owner.owner_id,
+                "request_id": request_id,
+                "generation": generation,
+                "accepted_sequence": accepted_sequence,
+                "expires_at": now + 15.0,
+            }
+        )
+        if handoff is None:
+            raise ValueError("Invalid live handoff request")
+        with self._scheduler_lock():
+            try:
+                existing = self.store.get(record.session_id, include_deleted=True)
+            except SessionNotFound:
+                existing = None
+            if existing is not None and existing.live_handoff is not None:
+                previous = existing.live_handoff
+                if previous.owner_id == owner.owner_id and previous.request_id == request_id:
+                    if (
+                        existing.status is SessionStatus.HANDOFF_PREPARED
+                        and previous.generation == generation
+                    ):
+                        return previous
+                    if existing.status in ACTIVE_STATUSES and previous.generation == generation + 1:
+                        return replace(previous, generation=generation)
+                    raise InvalidSessionTransition("Live handoff request was already settled")
+                if existing.status is SessionStatus.ATTACHED and (
+                    previous.owner_id != owner.owner_id or previous.generation != generation
+                ):
+                    raise InvalidSessionTransition("Live controller generation is stale")
+            if existing is not None and (
+                existing.status in ACTIVE_STATUSES or existing.status is SessionStatus.DELETED
+            ):
+                raise InvalidSessionTransition("The session already has a background controller")
+            if not self._has_capacity(
+                self.store.active_sessions(), project=record.cwd, owner_id=record.owner_id
+            ):
+                raise QueueFullError("Background worker capacity is full")
+            self._write_launch(record.session_id, launch)
+            self.store.prepare_live_handoff(
+                record.evolve(worker_pid=owner.pid), handoff, expected=existing
+            )
+        return handoff
+
+    def commit_live_handoff(
+        self, lease: SessionOwnerLease, handoff: LiveHandoff, *, now: float
+    ) -> BackgroundSession:
+        """Make the prepared transfer durable without touching the runtime lease."""
+
+        owner = self._verify_live_owner(lease)
+        if owner.owner_id != handoff.owner_id:
+            raise InvalidSessionTransition("Live handoff belongs to a different runtime")
+        with self._scheduler_lock():
+            return self.store.commit_live_handoff(lease.session_id, handoff, now=now)
+
+    def reconcile_live_handoff(
+        self, lease: SessionOwnerLease, *, request_id: str
+    ) -> BackgroundSession | None:
+        """Resolve a response lost at commit or roll back its uncommitted reservation."""
+
+        owner = self._verify_live_owner(lease)
+        with self._scheduler_lock():
+            try:
+                current = self.store.get(lease.session_id)
+            except SessionNotFound:
+                return None
+            handoff = current.live_handoff
+            if (
+                handoff is None
+                or handoff.owner_id != owner.owner_id
+                or handoff.request_id != request_id
+            ):
+                return None
+            if current.status is SessionStatus.HANDOFF_PREPARED:
+                self.store.return_live_controller(lease.session_id, handoff, prepared=True)
+                return None
+            if current.lease_token == request_id and current.status in ACTIVE_STATUSES:
+                return current
+            return None
+
+    def attach_live_runtime(
+        self, lease: SessionOwnerLease, *, generation: int
+    ) -> BackgroundSession:
+        """Return background control to a client connected to the hosted runtime."""
+
+        owner = self._verify_live_owner(lease)
+        with self._scheduler_lock():
+            current = self.store.get(lease.session_id)
+            handoff = current.live_handoff
+            if (
+                handoff is None
+                or handoff.owner_id != owner.owner_id
+                or handoff.generation != generation
+            ):
+                raise InvalidSessionTransition("Live controller generation is stale")
+            if current.status is SessionStatus.ATTACHED:
+                with self.store._lock():
+                    latest = self.store.get(lease.session_id)
+                    if (
+                        latest.status is not SessionStatus.ATTACHED
+                        or latest.live_handoff != handoff
+                    ):
+                        raise InvalidSessionTransition("Live controller generation is stale")
+                    return self.store.update(
+                        lease.session_id,
+                        live_handoff=replace(handoff, generation=generation + 1).to_dict(),
+                    )
+            inputs = BackgroundInputInbox(self.store)
+            with inputs.freeze_for_controller_change(current) as pending, self.store._lock():
+                item_id = current.approval_item_id or current.input_item_id
+                if item_id:
+                    from .inbox import BackgroundInteractionInbox
+
+                    pending = pending or (
+                        BackgroundInteractionInbox(self.store).accepted_answer(item_id) is not None
+                    )
+                if pending:
+                    raise LiveControllerInputPending("Accepted input is still being delivered")
+                return self.store.return_live_controller(lease.session_id, handoff, prepared=False)
+
     def handoff(
         self,
         *,
@@ -1182,6 +1356,8 @@ class BackgroundSupervisor:
                 existing,
                 foreground_owner_lease=foreground_owner_lease,
             )
+        if existing.live_handoff is not None and existing.status is SessionStatus.ATTACHED:
+            raise InvalidSessionTransition("The hosted session already has a foreground controller")
         was_completed = existing.status is SessionStatus.COMPLETED
         if launch is None:
             launch = self.recorded_launch(session_id) or LaunchSpec()
@@ -1257,6 +1433,7 @@ class BackgroundSupervisor:
             mode_application_status="pending",
             mode_application_attempt=existing.attempt + 1,
             mode_application_error="",
+            live_handoff=None,
         )
         if not start:
             # Persist the request before a caller releases a foreground owner.
@@ -1281,6 +1458,8 @@ class BackgroundSupervisor:
         if request.session_id != session_id:
             raise ValueError("prepared background request session ID does not match")
         session = self.store.get(session_id, include_deleted=True)
+        if session.live_handoff is not None:
+            raise InvalidSessionTransition("The session already has a hosted runtime")
         if session.status not in ACTIVE_STATUSES:
             raise InvalidSessionTransition(f"Cannot start prepared {session.status.value} session")
         if is_pending_queue_record(session):
@@ -1461,6 +1640,14 @@ class BackgroundSupervisor:
         session = self.store.get(session_id, include_deleted=True)
         if session.status == SessionStatus.DELETED:
             raise InvalidSessionTransition("Deleted background sessions cannot be foregrounded")
+        if session.live_handoff is not None and session.status in ACTIVE_STATUSES:
+            if session.status in {
+                SessionStatus.RUNNING,
+                SessionStatus.WAITING_INPUT,
+                SessionStatus.WAITING_APPROVAL,
+            }:
+                return session
+            raise InvalidSessionTransition("A live controller change is still in progress")
         if session.status not in ACTIVE_STATUSES:
             return session
 
@@ -1790,6 +1977,7 @@ class BackgroundSupervisor:
             current.session_id,
             SessionStatus.STARTING,
             expected_status=current.status,
+            live_handoff=None,
             expected_attempt=expected_attempt,
             expected_lease_token=expected_lease_token,
             resume_marker=f"input:{message_id}",
@@ -1936,6 +2124,10 @@ class BackgroundSupervisor:
     def cancel(self, session_id: str) -> BackgroundSession:
         with self._scheduler_lock():
             queued = self.store.get(session_id, include_deleted=True)
+            if queued.live_handoff is not None and queued.status in ACTIVE_STATUSES:
+                live = self._request_live_cancellation(queued)
+            else:
+                live = None
             if is_pending_queue_record(queued):
                 # A pending record has no child process, model call, or worker
                 # lease. Cancel it directly while holding the dispatcher lock
@@ -1949,6 +2141,8 @@ class BackgroundSupervisor:
                     cancellation_reason="user cancelled before worker start",
                     latest_activity="Cancelled while queued; worker was not started",
                 )
+        if live is not None:
+            return self._await_live_cancellation(live)
         session = self.store.get(session_id)
         if session.status in {SessionStatus.CANCELLED, SessionStatus.ARCHIVED}:
             return session
@@ -1993,6 +2187,50 @@ class BackgroundSupervisor:
                 )
             return cancelled
         return current
+
+    def _request_live_cancellation(self, session: BackgroundSession) -> BackgroundSession:
+        """Ask the hosted runtime to settle its own workflow and worker tasks."""
+
+        if session.status is SessionStatus.HANDOFF_PREPARED:
+            raise InvalidSessionTransition("Controller handoff is still preparing")
+        if session.status is SessionStatus.CANCELLING:
+            return session
+        return self.store.transition(
+            session.session_id,
+            SessionStatus.CANCELLING,
+            expected_status=session.status,
+            expected_attempt=session.attempt,
+            expected_lease_token=session.lease_token,
+            cancellation_reason="user requested cancellation",
+            latest_activity="Stopping live session",
+        )
+
+    def _await_live_cancellation(self, session: BackgroundSession) -> BackgroundSession:
+        until = time.monotonic() + self.cancel_grace_s
+        while True:
+            current = self.store.get(session.session_id)
+            if (
+                current.status is not SessionStatus.CANCELLING
+                or current.attempt != session.attempt
+                or current.lease_token != session.lease_token
+            ):
+                return current
+            if time.monotonic() >= until:
+                raise InvalidSessionTransition(
+                    "The hosted runtime is still settling cancelled work"
+                )
+            if self._worker_process_state(current) in {
+                _WorkerProcessState.DEAD,
+                _WorkerProcessState.MISMATCHED,
+            }:
+                self._settle_lost_live_pools(current)
+                return self.store.mark_orphaned(
+                    current.session_id,
+                    expected_status=current.status,
+                    expected_attempt=current.attempt,
+                    expected_lease_token=current.lease_token,
+                )
+            time.sleep(0.05)
 
     def set_priority(
         self,
@@ -2053,6 +2291,40 @@ class BackgroundSupervisor:
         pid = session.worker_pid
         if pid is None:
             return _WorkerProcessState.UNKNOWN
+        if session.live_handoff is not None:
+            from agenthicc.runners.process_lease import process_identity
+            from agenthicc.runners.session_lease import SessionOwnerInfo
+
+            if not session.artifact_dir:
+                return _WorkerProcessState.UNKNOWN
+            owner = SessionOwnerInfo.from_mapping(
+                read_json_object(Path(session.artifact_dir) / ".owner"),
+                session_id=session.session_id,
+            )
+            if owner is not None and (
+                owner.pid != pid or owner.owner_id != session.live_handoff.owner_id
+            ):
+                return _WorkerProcessState.MISMATCHED
+            identity = process_identity(pid)
+            if identity is None:
+                if os.name != "nt":
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        return _WorkerProcessState.DEAD
+                    except OSError:
+                        pass
+                return _WorkerProcessState.UNKNOWN
+            state, token = identity
+            if state == "Z":
+                return _WorkerProcessState.DEAD
+            if owner is None or not owner.process_start_token:
+                return _WorkerProcessState.UNKNOWN
+            return (
+                _WorkerProcessState.LIVE
+                if token == owner.process_start_token
+                else _WorkerProcessState.MISMATCHED
+            )
         if os.name == "nt":
             # Signal 0 is CTRL_C_EVENT on Windows, so os.kill is no liveness
             # probe there, and PID existence would not prove identity anyway.
@@ -2194,6 +2466,13 @@ class BackgroundSupervisor:
         session = self.store.get(session_id, include_deleted=True)
         if session.status == SessionStatus.DELETED:
             return session
+        if session.status is SessionStatus.ATTACHED and self._worker_process_state(session) in {
+            _WorkerProcessState.LIVE,
+            _WorkerProcessState.UNKNOWN,
+        }:
+            raise InvalidSessionTransition(
+                "The session is attached to a live or unverifiable runtime"
+            )
         if session.status in ACTIVE_STATUSES:
             self.cancel(session_id)
         return self.store.delete(session_id, force=True, operation_id=operation_id)
@@ -2371,6 +2650,21 @@ class BackgroundSupervisor:
             )
             if process_state is None:
                 process_state = self._worker_process_state(session)
+            if (
+                session.status is SessionStatus.HANDOFF_PREPARED
+                and session.live_handoff is not None
+                and session.live_handoff.expires_at <= now
+                and process_state is _WorkerProcessState.LIVE
+            ):
+                try:
+                    changed.append(
+                        self.store.return_live_controller(
+                            session.session_id, session.live_handoff, prepared=True
+                        )
+                    )
+                except InvalidSessionTransition:
+                    pass
+                continue
             if process_state in {_WorkerProcessState.DEAD, _WorkerProcessState.MISMATCHED}:
                 try:
                     changed.append(
@@ -2386,6 +2680,8 @@ class BackgroundSupervisor:
                     # A heartbeat or a new attempt won the race with process
                     # inspection. Its newer state is reconciled next pass.
                     continue
+                if session.live_handoff is not None:
+                    self._settle_lost_live_pools(session)
                 continue
 
             if heartbeat_expired:
@@ -2445,6 +2741,30 @@ class BackgroundSupervisor:
                 except InvalidSessionTransition:
                     continue
         return changed
+
+    @staticmethod
+    def _settle_lost_live_pools(session: BackgroundSession) -> None:
+        from agenthicc.memory.journal import ConversationJournal
+        from agenthicc.runners.session_lease import SessionLeaseError, SessionOwnerStore
+
+        artifact = Path(session.artifact_dir)
+        if not artifact.is_absolute() or artifact.name != session.session_id:
+            return
+        path = artifact / "conversation-journal.jsonl"
+        if not path.is_file():
+            return
+        try:
+            owners = SessionOwnerStore(artifact.parent)
+            with owners.acquire(
+                session.session_id, entrypoint="hosted-recovery", require_existing=True
+            ):
+                journal = ConversationJournal(path)
+                try:
+                    journal.recover_interrupted_subagent_pools()
+                finally:
+                    journal.close()
+        except (SessionLeaseError, OSError) as exc:
+            logger.warning("Cannot settle interrupted hosted pools: %s", type(exc).__name__)
 
     def _recover_pending_input_records(
         self,

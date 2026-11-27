@@ -18,6 +18,7 @@ from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.vocabulary import report_sentence
 
 __all__ = [
+    "SUBAGENT_ROLE",
     "TRANSCRIPT_EVENTS",
     "ChangeSummary",
     "DetailData",
@@ -132,6 +133,84 @@ def _payload_text(payload: dict[str, object], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+#: The subagent lifecycle events the session log carries, shown under one role.
+_SUBAGENT_EVENTS = frozenset(
+    {
+        "subagent_pool_started",
+        "subagent_worker_done",
+        "subagent_worker_failed",
+        "subagent_worker_stop_requested",
+        "subagent_pool_done",
+        "subagent_transcript_degraded",
+    }
+)
+SUBAGENT_ROLE = "subagents"
+
+
+def _count(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key, 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _subagent_notice_line(source: str, payload: dict[str, object]) -> TranscriptLine | None:
+    """The notice the parent agent received about its subagents.
+
+    The text is the model-facing message; the summary is what the operator
+    reads. Neither is something the operator typed, so it is not a ``you`` row.
+    """
+    text = _message_text(_payload_text(payload, "summary") or _payload_text(payload, "text"))
+    if not text:
+        return None
+    glyph = {"subagent_worker": "✓", "subagent_question": "◆"}.get(source, "●")
+    return TranscriptLine(SUBAGENT_ROLE, f"parent notified · {text}", glyph)
+
+
+def _subagent_line(kind: str, payload: dict[str, object]) -> TranscriptLine | None:
+    """One subagent lifecycle event as a line: who finished, how, and why one stopped."""
+    if kind == "subagent_pool_started":
+        workers = payload.get("workers")
+        labels = (
+            [
+                " ".join(str(worker.get("label", "")).split())
+                for worker in workers
+                if isinstance(worker, dict)
+            ]
+            if isinstance(workers, list)
+            else []
+        )
+        total = max(_count(payload, "total"), len(labels))
+        names = ", ".join(label for label in labels[:6] if label)
+        more = f" +{total - 6} more" if total > 6 else ""
+        text = f"{total} worker{'s' if total != 1 else ''} started"
+        return TranscriptLine(SUBAGENT_ROLE, f"{text} · {names}{more}" if names else text, "●")
+    if kind in {"subagent_worker_done", "subagent_worker_failed"}:
+        label = " ".join(_payload_text(payload, "label").split()) or "worker"
+        progress = f"[{_count(payload, 'done')}/{_count(payload, 'total')}] {label}"
+        if payload.get("ok", kind == "subagent_worker_done") is not False:
+            first = _message_text(_payload_text(payload, "text")).partition("\n")[0]
+            return TranscriptLine(
+                SUBAGENT_ROLE, f"{progress} · {first}" if first else progress, "✓"
+            )
+        error = _message_text(_payload_text(payload, "error")).partition("\n")[0] or "failed"
+        return TranscriptLine(SUBAGENT_ROLE, f"{progress} · {error}", "✗")
+    if kind == "subagent_worker_stop_requested":
+        mode = _payload_text(payload, "mode") or "stop"
+        reason = " ".join(_payload_text(payload, "reason").split())
+        source = _payload_text(payload, "source")
+        worker = _payload_text(payload, "worker_id")[-8:]
+        detail = " · ".join(part for part in (source, reason) if part)
+        text = f"{worker or 'worker'} {mode} requested"
+        return TranscriptLine(SUBAGENT_ROLE, f"{text} · {detail}" if detail else text, "●")
+    if kind == "subagent_pool_done":
+        succeeded, total, failed = (
+            _count(payload, key) for key in ("succeeded", "total", "failed")
+        )
+        text = f"{succeeded}/{total} done" + (f" · {failed} unsuccessful" if failed else "")
+        return TranscriptLine(SUBAGENT_ROLE, text, "✗" if failed or succeeded < total else "✓")
+    failures = _count(payload, "transcript_write_failures")
+    return TranscriptLine(SUBAGENT_ROLE, f"transcripts partial · {failures} writes failed", "✗")
+
+
 def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | None:
     """One journal event as a transcript line, or ``None`` for bookkeeping events.
 
@@ -143,8 +222,13 @@ def transcript_line(kind: str, payload: dict[str, object]) -> TranscriptLine | N
 
     payload = migrate_event_payload(kind, payload)
     if kind == "user_message":
+        source = _payload_text(payload, "source")
+        if source.startswith("subagent_"):
+            return _subagent_notice_line(source, payload)
         text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("you", text) if text else None
+    if kind in _SUBAGENT_EVENTS:
+        return _subagent_line(kind, payload)
     if kind in ("text", "assistant_message"):
         text = _message_text(_payload_text(payload, "text"))
         return TranscriptLine("assistant", text) if text else None

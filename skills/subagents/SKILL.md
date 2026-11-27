@@ -120,7 +120,9 @@ aggregate.
 
 In a direct terminal turn, the pool receipt means workers are still running.
 Continue with unrelated work or end the turn. When the runtime delivers a
-completion notice, call `collect_subagent_results(pool_id)`. Avoid polling,
+notice that a worker finished, call `collect_subagent_results(pool_id)`; it
+returns every finished worker's result while the rest keep running. The
+worker that completes the pool says so. Avoid polling,
 sleeping, or duplicating a worker's task. If asked about pending work, report
 that it is still running. Foreground turns receive their aggregate directly.
 

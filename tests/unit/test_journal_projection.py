@@ -33,6 +33,23 @@ def _pool(journal: ConversationJournal, pool_id: str, *, background: bool = True
     journal.subagent_pool_finished(pool_id=pool_id, total=1, succeeded=1, failed=0, text="done")
 
 
+def _worker_result(journal: ConversationJournal, pool_id: str, task_id: str = "task-0") -> None:
+    journal.subagent_worker_result(
+        pool_id=pool_id,
+        fingerprint=f"fp-{pool_id}",
+        task_id=task_id,
+        agent_type="explorer",
+        label="explorer #1",
+        ok=True,
+        text="done",
+        error="",
+        duration_ms=1.0,
+        tool_calls=[],
+        changed_paths=[],
+        status="completed",
+    )
+
+
 def test_queries_on_a_large_journal_do_not_reread_it(tmp_path: Path) -> None:
     path = tmp_path / "journal.jsonl"
     with path.open("w", encoding="utf-8") as handle:
@@ -42,16 +59,17 @@ def test_queries_on_a_large_journal_do_not_reread_it(tmp_path: Path) -> None:
     journal = ConversationJournal(path)
     try:
         _pool(journal, "pool-1")
-        journal.completed_background_subagent_pools()  # builds the projection once
+        _worker_result(journal, "pool-1")
+        journal.undelivered_subagent_worker_results()  # builds the projection once
         start = time.perf_counter()
         for _ in range(100):
-            completed = journal.completed_background_subagent_pools()
+            pending = journal.undelivered_subagent_worker_results()
             found = journal.find_subagent_pool("turn-1", "fp-pool-1")
         per_call = (time.perf_counter() - start) / 200
     finally:
         journal.close()
 
-    assert [record["pool_id"] for record in completed] == ["pool-1"]
+    assert [record["pool_id"] for record in pending] == ["pool-1"]
     assert found is not None
     assert per_call < 0.001, f"{per_call * 1000:.2f} ms per query"
 
@@ -59,7 +77,10 @@ def test_queries_on_a_large_journal_do_not_reread_it(tmp_path: Path) -> None:
 @settings(max_examples=40, deadline=None)
 @given(
     st.lists(
-        st.tuples(st.sampled_from(["start", "finish", "deliver", "usage"]), st.integers(0, 3)),
+        st.tuples(
+            st.sampled_from(["start", "background", "result", "finish", "deliver", "usage"]),
+            st.integers(0, 3),
+        ),
         max_size=30,
     ),
     st.booleans(),
@@ -78,18 +99,27 @@ def test_the_projection_equals_a_fresh_read(
             journal.subagent_pool_started(
                 pool_id=pool_id, fingerprint="fp", parent_run_id="t", tasks=[]
             )
+        elif operation == "background":
+            journal.subagent_pool_backgrounded(pool_id=pool_id, tool_result={"status": "ok"})
+        elif operation == "result":
+            _worker_result(journal, pool_id)
         elif operation == "finish":
             journal.subagent_pool_finished(
                 pool_id=pool_id, total=1, succeeded=1, failed=0, text="x"
             )
         elif operation == "deliver":
-            journal.subagent_pool_notification_delivered(pool_id=pool_id, message_id=pool_id)
+            journal.subagent_worker_notification_delivered(
+                pool_id=pool_id,
+                task_id="task-0",
+                attempt=1,
+                message_id=journal.subagent_worker_message_id(pool_id, "task-0", 1),
+            )
         else:
             journal.append_usage_record({"record_id": f"r{number}"})
     incremental = (
         journal.fold_subagent_pool_lifecycle(),
-        journal.completed_background_subagent_pools(),
-        journal.delivered_subagent_pool_notifications(),
+        journal.undelivered_subagent_worker_results(),
+        journal.delivered_subagent_worker_notifications(),
         len(journal.fold_usage_records()),
     )
     journal.close()
@@ -100,8 +130,8 @@ def test_the_projection_equals_a_fresh_read(
     try:
         fresh = (
             reopened.fold_subagent_pool_lifecycle(),
-            reopened.completed_background_subagent_pools(),
-            reopened.delivered_subagent_pool_notifications(),
+            reopened.undelivered_subagent_worker_results(),
+            reopened.delivered_subagent_worker_notifications(),
             len(reopened.fold_usage_records()),
         )
     finally:
@@ -196,7 +226,11 @@ async def test_off_loop_pool_receipts_keep_sequence_and_terminal_state(tmp_path:
             pool_id="pool-7",
             tool_result=receipt,
         )
-        (terminal,) = journal.completed_background_subagent_pools()
+        (terminal,) = (
+            record
+            for record in journal.fold_subagent_pool_lifecycle()
+            if record["pool_id"] == "pool-7"
+        )
         assert terminal["status"] == "completed" and terminal["text"] == "finished"
         assert terminal["tool_result"] == receipt
         sequences = [json.loads(line)["seq"] for line in path.read_text().splitlines()]

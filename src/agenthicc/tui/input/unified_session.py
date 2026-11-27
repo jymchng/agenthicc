@@ -92,6 +92,7 @@ class TerminalHooks:
     repaint: Callable[[], None] = _noop
     runtime_dir: Path | None = None
     handoff: HandoffRunner | None = None
+    edit_prompt: Callable[[Path], Awaitable[int]] | None = None
 
 
 def _write_draft(directory: Path, text: str) -> Path:
@@ -296,6 +297,15 @@ class UnifiedInputSession:
                     RuntimeError("the input session stopped before terminal handoff")
                 )
 
+    def hosted_input_ready(self) -> None:
+        """Report readiness for input delivered by an attached controller."""
+        if self._on_ready is not None:
+            self._on_ready(True)
+
+    async def dispatch_hosted_key(self, key: Key, text: str) -> bool:
+        """Dispatch a validated remote keystroke through the normal keymap."""
+        return await self._dispatch(key, text) is not _EXIT
+
     def sync_reporting(self) -> None:
         """Re-apply mouse reporting after the layout changed (TUX-09 §2.3)."""
         backend = self._backend
@@ -309,6 +319,10 @@ class UnifiedInputSession:
 
     async def run_terminal_handoff(self, operation: Callable[[], Awaitable[None]]) -> None:
         """Run *operation* with cooked terminal input, then resume this session."""
+        remote = self.terminal_hooks.handoff
+        if remote is not None:
+            await remote(operation)
+            return
         backend = self._backend
         if backend is None or self._exit_requested:
             raise RuntimeError("the interactive input session is not running")
@@ -717,7 +731,11 @@ class UnifiedInputSession:
         try:
             hooks.suspend()
             try:
-                status = await asyncio.to_thread(_run_editor, path)
+                status = (
+                    await hooks.edit_prompt(path)
+                    if hooks.edit_prompt is not None
+                    else await asyncio.to_thread(_run_editor, path)
+                )
             except (OSError, ValueError) as exc:
                 self._state.conversation.notify_transient(
                     f"The editor could not start ({exc}); the prompt is unchanged", duration=4.0

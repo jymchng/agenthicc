@@ -397,6 +397,11 @@ class AgentMessageBroker:
                 self.on_parent_activity()
             return envelope
 
+    def notify_parent(self) -> None:
+        """Hint the parent that a worker reached a durable outcome to read."""
+        if self.on_parent_activity is not None:
+            self.on_parent_activity()
+
     async def open_question(
         self,
         *,
@@ -1231,13 +1236,14 @@ def make_parent_communication_tools(
     ) -> dict[str, object]:
         """Read a subagent pool's results; it never blocks unless wait is true.
 
-        A running pool returns status "running" with one row per worker and any
-        question a worker is waiting on. A finished pool returns its results,
-        the same way every time you ask, including after the session resumed.
-        wait=true waits up to timeout_s seconds (capped by the configured
-        maximum). A queued message or notice interrupts the wait so the parent
-        can respond. Avoid blocking and polling: you are notified when a
-        background pool finishes.
+        A running pool returns status "running" with one row per worker, the
+        results of the workers that have already finished under "finished", and
+        any question a worker is waiting on. A finished pool returns all its
+        results, the same way every time you ask, including after the session
+        resumed. wait=true waits up to timeout_s seconds (capped by the
+        configured maximum). A queued message or notice interrupts the wait so
+        the parent can respond. Avoid blocking and polling: you are notified as
+        each background worker finishes.
 
         Args:
             pool_id: The ``pool_id`` spawn_subagents returned.
@@ -1311,16 +1317,17 @@ def make_parent_communication_tools(
         """List the subagent pools you can reach: running, finished and interrupted.
 
         Each row has the pool id, status, whether it runs in the background,
-        worker counts, depth, and whether its completion notice is still to be
-        delivered. Use the pool id with collect_subagent_results,
+        worker counts, depth, and how many of its workers' finish notices are
+        still to be delivered. Use the pool id with collect_subagent_results,
         stop_subagents or retry_subagent.
         """
         rows: dict[str, dict[str, object]] = {}
         if not owner and journal is not None:
-            undelivered = {
-                str(record.get("pool_id", ""))
-                for record in journal.completed_background_subagent_pools()
-            }
+            undelivered: dict[str, int] = {}
+            for record in journal.undelivered_subagent_worker_results():
+                if phase_pool_matches(record, current_phase_owner()):
+                    pending_pool = str(record.get("pool_id", ""))
+                    undelivered[pending_pool] = undelivered.get(pending_pool, 0) + 1
             for record in journal.fold_subagent_pool_lifecycle():
                 if not phase_pool_matches(record, current_phase_owner()):
                     continue
@@ -1334,7 +1341,7 @@ def make_parent_communication_tools(
                     "total": record.get("total", 0),
                     "succeeded": record.get("succeeded", 0),
                     "failed": record.get("failed", 0),
-                    "notice_pending": pool_id in undelivered,
+                    "notices_pending": undelivered.get(pool_id, 0),
                 }
         for handle in registry.handles():
             if not _in_scope(handle):
@@ -1504,6 +1511,17 @@ def _running_pool_payload(handle: PoolHandle, *, timed_out: bool) -> dict[str, o
         "workers": rows,
         "pending_questions": handle.broker.pending_questions(recipient="main"),
     }
+    aggregate = pool.finished_aggregate() if pool is not None else None
+    if aggregate is not None:
+        # The workers that have finished, so a finish notice can be acted on
+        # while the rest of the pool runs. The pool is still running: this is
+        # not a terminal collection and does not satisfy a phase's gate.
+        payload["finished"] = {
+            "count": aggregate.total,
+            "succeeded": aggregate.succeeded,
+            "failed": aggregate.failed,
+            "results": aggregate.text,
+        }
     if timed_out:
         payload["timed_out"] = True
     return payload

@@ -282,6 +282,10 @@ result boundary is instead recorded in the same
 - `subagent_worker_result` is written after each worker finishes and contains
   its complete final text, status, error, tool names, changed-path hints, and
   pool/task identity;
+- `subagent_worker_notification_delivered` records, per worker attempt, that its
+  finish notice reached provider memory; a notice is appended by stable message
+  ID before this record is written, so a crash between the two redelivers
+  nothing twice;
 - `subagent_pool_result` is written only after every worker succeeds and
   contains the complete labelled aggregate plus its task fingerprint;
 - `fold()` ignores both record kinds because they are not provider messages;
@@ -812,6 +816,14 @@ together with its `mode_application_status`, because `evolve` treats a mode
 name that arrives alone as a new, still-pending request. The provisional view
 shown during an index rebuild can rebuild a session created before its log
 window only from an older full-record `updated` event, not from a delta.
+
+A hosted session publishes its local controller endpoint in
+`~/.agenthicc/sessions/<id>/.controller` with private permissions. The file
+contains the authentication material for the local endpoint. Detach records
+the lease owner, controller generation, input sequence and handoff ID in
+the background lifecycle log. The existing session-owner record remains the
+writer authority. The background attempt and scheduler slot change at the
+commit event. Reattach keeps that writer and releases the background slot.
 
 The agents hub watches `events.jsonl`, `input-inbox/` and the open agent's
 journal for changes instead of polling them, and creates `input-inbox/` if it

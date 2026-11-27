@@ -279,6 +279,21 @@ their existing owners. The agents hub reads the index and renders safe
 metadata; it does not mutate frozen kernel state directly. `/bg`,
 `/background`, `/agents`, and `agenthicc agents` all enter this same boundary.
 
+### Live interactive ownership
+
+A supported interactive session starts its runtime with an independent process
+lifetime. The physical terminal connects using authenticated loopback frames.
+The hosted runtime owns the session lease, workflows, tools, event processor
+and worker tasks. The attached controller is responsible for terminal input
+and output.
+
+Live adoption reserves the existing scheduler's capacity and commits a
+background attempt and controller generation in the lifecycle store. The
+session lease and journal writer stay with the runtime. Reattachment issues
+another generation after accepted inputs reach the runtime. Explicit
+cancellation settles the runtime's tasks through their ordinary teardown
+path.
+
 ### Background-session projection boundary
 
 The agents hub (`agenthicc agents`, `/agents`) is a projection over the

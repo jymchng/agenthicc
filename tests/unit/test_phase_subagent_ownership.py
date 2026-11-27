@@ -53,6 +53,20 @@ async def test_a4_phase_ownership_filters_notices_and_rehydrated_collection(
     journal = ConversationJournal(tmp_path / "journal.jsonl")
     try:
         start(journal, OWNER)
+        journal.subagent_worker_result(
+            pool_id="pool",
+            fingerprint="fp",
+            task_id="first",
+            agent_type="explorer",
+            label="explorer #1",
+            ok=True,
+            text="private finding",
+            error="",
+            duration_ms=1.0,
+            tool_calls=[],
+            changed_paths=[],
+            status="completed",
+        )
         journal.subagent_pool_finished(
             pool_id="pool",
             total=1,
@@ -64,6 +78,7 @@ async def test_a4_phase_ownership_filters_notices_and_rehydrated_collection(
         assert not JournalNoticeSource(journal, registry, other).has_pending()
         (notice,) = JournalNoticeSource(journal, registry, OWNER).claim()
         assert notice.pool_id == "pool" and "private finding" not in notice.text
+        assert notice.message_id == "subagent-worker:pool:first:1"
         _, _, collect, list_pools, *_ = make_parent_communication_tools(
             registry, "session", journal
         )

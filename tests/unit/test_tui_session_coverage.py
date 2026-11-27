@@ -167,19 +167,26 @@ def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None
         pool_id="pool-1",
         tool_result={"status": "backgrounded", "pool_id": "pool-1"},
     )
-    journal.subagent_pool_finished(
+    journal.subagent_worker_result(
         pool_id="pool-1",
-        total=1,
-        succeeded=1,
-        failed=0,
+        fingerprint="tasks-1",
+        task_id="worker-1",
+        agent_type="researcher",
+        label="researcher #1",
+        ok=True,
         text="The durable worker result.",
+        error="",
+        duration_ms=1.0,
+        tool_calls=[],
+        changed_paths=[],
+        status="completed",
     )
 
     try:
         session._deliver_completed_background_subagents()
         session._deliver_completed_background_subagents()
 
-        message_id = "subagent-completion:pool-1"
+        message_id = "subagent-worker:pool-1:worker-1:1"
         assert len(memory._messages) == 1
         content = str(memory._messages[0]["content"])
         # Notice, then pull: worker text is collected as a tool result, never
@@ -187,8 +194,8 @@ def test_completed_background_subagent_is_delivered_once(tmp_path: Path) -> None
         assert "The durable worker result." not in content
         assert 'collect_subagent_results(pool_id="pool-1")' in content
         event = ctx.app_state.conversation._events_by_id[message_id]
-        assert event.payload["source"] == "subagent_completion"
-        assert journal.delivered_subagent_pool_notifications() == frozenset({"pool-1"})
+        assert event.payload["source"] == "subagent_worker"
+        assert journal.delivered_subagent_worker_notifications() == frozenset({message_id})
     finally:
         journal.close()
 

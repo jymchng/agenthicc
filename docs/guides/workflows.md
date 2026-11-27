@@ -1004,10 +1004,15 @@ is supplied.
 ### Collect a phase's subagent results
 
 Supported interactive phases can do independent work while their subagents
-run. The session routes questions and completion notices to the phase
+run. The session routes questions and worker-finished notices to the phase
 invocation that started the pool. When the phase yields, it waits without
 making provider calls. A phase can resume on a notice or queued input.
 After an operator pause, use `/workflow resume`.
+
+A hosted interactive session can detach while a phase runs or waits for its
+workers. The same phase invocation continues in the background. Its existing
+checkpoint, collection receipts, and transition rules still govern when the
+workflow can advance.
 
 Call `collect_subagent_results` for each terminal pool. If a transition shares
 a batch with spawn or collection, it returns `subagents_pending`. Submit the

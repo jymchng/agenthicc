@@ -49,6 +49,7 @@ def occupies_worker_slot(session: BackgroundSession) -> bool:
         # capacity; this prevents a migration from over-admitting workers.
         return not is_pending_queue_record(session)
     return session.status in {
+        SessionStatus.HANDOFF_PREPARED,
         SessionStatus.STARTING,
         SessionStatus.RUNNING,
         SessionStatus.WAITING_APPROVAL,

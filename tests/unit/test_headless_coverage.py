@@ -518,7 +518,9 @@ async def test_a_headless_session_announces_a_pool_interrupted_by_a_crash(
         assert len(notices) == 1
         assert "was interrupted when the session stopped" in notices[0]
         assert 'collect_subagent_results(pool_id="crashed-pool")' in notices[0]
-        assert journal.delivered_subagent_pool_notifications() == frozenset({"crashed-pool"})
+        assert journal.delivered_subagent_worker_notifications() == frozenset(
+            {"subagent-worker:crashed-pool:task-0:1"}
+        )
     finally:
         await session.processor.stop()
         await processor_task

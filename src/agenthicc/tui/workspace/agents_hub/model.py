@@ -54,6 +54,7 @@ RECENT_WINDOW_S = 30 * 60
 #: Statuses that always belong to the Running tab.
 RUNNING_TAB_STATUSES = frozenset(
     {
+        SessionStatus.ATTACHED,
         SessionStatus.QUEUED,
         SessionStatus.STARTING,
         SessionStatus.RUNNING,

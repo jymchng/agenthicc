@@ -11,6 +11,8 @@ from typing import Mapping
 
 
 class SessionStatus(str, Enum):
+    ATTACHED = "attached"
+    HANDOFF_PREPARED = "handoff_prepared"
     QUEUED = "queued"
     STARTING = "starting"
     RUNNING = "running"
@@ -93,6 +95,7 @@ def _mode_application_status(
 
 ACTIVE_STATUSES = frozenset(
     {
+        SessionStatus.HANDOFF_PREPARED,
         SessionStatus.QUEUED,
         SessionStatus.STARTING,
         SessionStatus.RUNNING,
@@ -115,6 +118,12 @@ TERMINAL_STATUSES = frozenset(
 ATTEMPT_HISTORY_LIMIT = 16
 
 _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
+    SessionStatus.ATTACHED: frozenset(
+        {SessionStatus.HANDOFF_PREPARED, SessionStatus.COMPLETED, SessionStatus.ORPHANED}
+    ),
+    SessionStatus.HANDOFF_PREPARED: frozenset(
+        {SessionStatus.ATTACHED, SessionStatus.RUNNING, SessionStatus.ORPHANED}
+    ),
     SessionStatus.QUEUED: frozenset(
         {
             SessionStatus.STARTING,
@@ -135,6 +144,7 @@ _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
     ),
     SessionStatus.RUNNING: frozenset(
         {
+            SessionStatus.ATTACHED,
             SessionStatus.WAITING_APPROVAL,
             SessionStatus.WAITING_INPUT,
             SessionStatus.RETRYING,
@@ -144,8 +154,12 @@ _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
             SessionStatus.ORPHANED,
         }
     ),
-    SessionStatus.WAITING_APPROVAL: frozenset({SessionStatus.RUNNING, SessionStatus.CANCELLING}),
-    SessionStatus.WAITING_INPUT: frozenset({SessionStatus.RUNNING, SessionStatus.CANCELLING}),
+    SessionStatus.WAITING_APPROVAL: frozenset(
+        {SessionStatus.RUNNING, SessionStatus.CANCELLING, SessionStatus.ATTACHED}
+    ),
+    SessionStatus.WAITING_INPUT: frozenset(
+        {SessionStatus.RUNNING, SessionStatus.CANCELLING, SessionStatus.ATTACHED}
+    ),
     SessionStatus.RETRYING: frozenset(
         {
             SessionStatus.QUEUED,
@@ -402,6 +416,51 @@ class LaunchSpec:
 
 
 @dataclass(frozen=True)
+class LiveHandoff:
+    """Durable controller authority for a session with one hosted writer."""
+
+    owner_id: str
+    generation: int
+    request_id: str
+    accepted_sequence: int
+    expires_at: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "owner_id": self.owner_id,
+            "generation": self.generation,
+            "request_id": self.request_id,
+            "accepted_sequence": self.accepted_sequence,
+            "expires_at": self.expires_at,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "LiveHandoff | None":
+        if not isinstance(value, Mapping):
+            return None
+        owner_id = value.get("owner_id")
+        generation = value.get("generation")
+        request_id = value.get("request_id")
+        accepted_sequence = value.get("accepted_sequence")
+        expires_at = value.get("expires_at")
+        if (
+            not isinstance(owner_id, str)
+            or not 0 < len(owner_id) <= 256
+            or type(generation) is not int
+            or generation < 0
+            or not isinstance(request_id, str)
+            or not 0 < len(request_id) <= 128
+            or type(accepted_sequence) is not int
+            or accepted_sequence < 0
+            or not isinstance(expires_at, (int, float))
+            or isinstance(expires_at, bool)
+            or not math.isfinite(expires_at)
+        ):
+            return None
+        return cls(owner_id, generation, request_id, accepted_sequence, float(expires_at))
+
+
+@dataclass(frozen=True)
 class BackgroundSession:
     """One durable background execution and its recoverable metadata."""
 
@@ -507,6 +566,7 @@ class BackgroundSession:
     # AGI-04: a retry is a new session linked to the failed one.
     retried_from: str = ""
     retried_as: str = ""
+    live_handoff: LiveHandoff | None = None
 
     @classmethod
     def create(
@@ -751,6 +811,11 @@ class BackgroundSession:
             cost_usd=_amount(changes.get("cost_usd", self.cost_usd)),
             retried_from=_bounded_str("retried_from", self.retried_from, 128),
             retried_as=_bounded_str("retried_as", self.retried_as, 128),
+            live_handoff=(
+                LiveHandoff.from_mapping(changes["live_handoff"])
+                if "live_handoff" in changes
+                else self.live_handoff
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -833,6 +898,7 @@ class BackgroundSession:
             "cost_usd": self.cost_usd,
             "retried_from": self.retried_from,
             "retried_as": self.retried_as,
+            "live_handoff": self.live_handoff.to_dict() if self.live_handoff else None,
         }
 
     @classmethod
@@ -1003,4 +1069,5 @@ class BackgroundSession:
             cost_usd=_amount(value.get("cost_usd")),
             retried_from=raw_retried_from[:128] if isinstance(raw_retried_from, str) else "",
             retried_as=raw_retried_as[:128] if isinstance(raw_retried_as, str) else "",
+            live_handoff=LiveHandoff.from_mapping(value.get("live_handoff")),
         )

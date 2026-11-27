@@ -224,18 +224,27 @@ class TestDurabilityAndCrash:
         interrupted = next(worker for worker in workers if worker["task_id"] == "task-1")
         assert interrupted["status"] == "interrupted"
         assert interrupted["ok"] is False
-        assert recovered.completed_background_subagent_pools()[0]["failed"] == 1
-        recovered.subagent_pool_notification_delivered(
-            pool_id="pool-1",
-            message_id="subagent-completion:pool-1",
-        )
-        assert recovered.completed_background_subagent_pools() == []
+        rows = recovered.undelivered_subagent_worker_results()
+        assert [(row["task_id"], row["ok"]) for row in rows] == [
+            ("task-0", True),
+            ("task-1", False),
+        ]
+        assert [(row["finished"], row["total"]) for row in rows] == [(1, 2), (2, 2)]
+        assert [row["pool_complete"] for row in rows] == [False, True]
+        for row in rows:
+            recovered.subagent_worker_notification_delivered(
+                pool_id="pool-1",
+                task_id=str(row["task_id"]),
+                attempt=1,
+                message_id=str(row["message_id"]),
+            )
+        assert recovered.undelivered_subagent_worker_results() == []
         recovered.close()
 
     def test_message_receipt_survives_state_replacement(self, tmp_path) -> None:
         jp = tmp_path / "j.jsonl"
         journal = ConversationJournal(jp)
-        message_id = "subagent-completion:pool-1"
+        message_id = "subagent-worker:pool-1:task-0:1"
         journal.append_message(_msg("user", "finished"), message_id=message_id)
         journal.replace_state([_msg("user", "compacted")], None)
         assert journal.has_message_id(message_id)

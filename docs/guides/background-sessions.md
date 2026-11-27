@@ -16,16 +16,75 @@ uv run agenthicc run --background --workflow code_plan --intent "Plan the next r
 The command returns the stable session ID as soon as the request is durably
 accepted. With queueing enabled, acceptance may mean `queued`, not that a
 worker process has started.
-Inside an active TUI session, `/bg`, `/background`, and `/detach` are
-equivalent. They preserve the current session ID and durable journal, then
-return to the shell after starting a background worker. Both commands appear
-in the slash-command picker.
+Inside an active TUI, `/detach`, `/bg`, and `/background` are equivalent.
+A supported interactive session starts its runtime in an independent local
+process before the first turn. Detach changes which controller can send input
+to that process and returns the terminal to the shell once the change commits.
 
-### What `/detach` does end to end
+### Detach and reattach a live session
 
-The command hands the current session to a separate local worker process; it
-does not merely hide the TUI while the foreground model request continues.
-The path through the runtime is:
+Provider requests, tool calls, workflow invocations and subagent attempts
+continue in the same runtime. The background supervisor reserves capacity and
+records the controller generation before the terminal exits. If capacity is
+full, the session stays attached and its work continues.
+
+A session open in a terminal is a live agent in the hub from its first turn, not
+only after a detach. It is listed in the Running tab as `attached`, its
+transcript follows the agent as it works, idles for its subagents, or is woken by
+their notices, and its saved-session row is hidden so there is no second,
+finished-looking copy of it. The hub finds it through a small marker the runtime
+keeps in `~/.agenthicc/interactive` while it runs. The marker is only a hint:
+each entry is checked against the session's lease, and a runtime that died
+without removing it is dropped and the marker deleted. Enter on such a row says
+that another terminal holds the session (detach it there with `/detach`), and
+stop, input and resume are not offered. Once the session is detached, its
+background record takes over and the row shows `running`.
+
+Detaching never cancels a subagent. This holds for a session with no workflow:
+five Explorers started by `spawn_subagents` are still running, with the same
+worker IDs and attempt numbers, after `Successfully backgrounded`, and none
+shows `parent_cancelled`. The same holds for a parent that has already yielded,
+a parent in the middle of a provider request, and an explicit foreground
+`spawn_subagents` call that is still waiting. Every worker that finishes
+notifies the parent, whether or not a terminal is attached: the runtime wakes
+an idle parent, or appends the notice at the next tool boundary of a running
+turn, with a notice that names the worker and how many of its pool have
+finished (`explorer #2 … 2/5 workers of this pool have finished`). The worker
+that completes its pool says so. Workers that finish together share one wake.
+The notice never carries what the worker wrote. The parent reads it with
+`collect_subagent_results`, which returns the results of the workers that have
+finished even while the rest of the pool runs. Every notice and the parent's
+replies are in the session transcript, so a terminal that reattaches later
+replays them. A blocking `spawn_subagents` call is the exception: its parent
+is waiting for the aggregate, so its workers send no notices.
+
+Run `agenthicc agents status SESSION_ID --json` to inspect the runtime PID,
+transcript cursor, pool IDs, phase ownership, and worker attempts. Use
+`agenthicc attach SESSION_ID` or the agents hub to reconnect to that runtime.
+The new controller gets the current transcript and work-in-progress view.
+To stop one worker while the session is detached, run
+`agenthicc agents stop-worker SESSION_ID POOL_ID WORKER_ID`.
+
+Pending approval and question requests appear in the background inbox with
+their original deadlines. Input accepted before the controller changes reaches
+the original runtime in order. An explicitly paused workflow stays paused
+while its workers finish. Use `/workflow resume` to resume the workflow.
+
+If the runtime dies, the supervisor verifies the process identity and marks
+lost pools interrupted. An operator can resume the saved work through the
+existing recovery controls.
+
+### Handoff from a terminal-owned session
+
+A terminal-owned session (background agents disabled, or the local controller
+transport unavailable at startup) uses checkpoint handoff to a separate worker.
+Checkpoint handoff cancels the foreground turn, and a cancelled turn aborts its
+live pools, so a terminal-owned session with live subagent pools refuses the
+command with the reason `runtime_not_hosted` before it cancels, persists or
+launches anything. Wait for the pools to finish or stop them, then detach. A
+direct-session pool that has finished and only awaits collection is not live
+and does not block the handoff; a workflow phase's uncollected pools still do.
+The checkpoint handoff follows these steps.
 
 1. **The command is routed immediately.** CLI command discovery installs
    `/detach` and the `/bg`/`/background` aliases. They use an immediate-control
@@ -382,7 +441,9 @@ cost from 120) and a shown column is never narrower than its minimum, so
 statuses stay readable at any width. The report line is the first sentence of
 the agent's latest message, redacted, which the worker records as it works; a
 completed agent keeps it as its summary, and a failed one shows its error.
-One vocabulary is used by the hub, `agenthicc agents list` and these docs:
+One vocabulary is used by the hub, `agenthicc agents list` and these docs.
+`attached` is a hosted session whose terminal is open: it is working, or idle
+while its subagents run, and the terminal holds its controller.
 
 | Status | Glyph | Label | Group |
 |---|---|---|---|
@@ -390,6 +451,7 @@ One vocabulary is used by the hub, `agenthicc agents list` and these docs:
 | `waiting_input` | `◆` | needs input | Needs you |
 | `orphaned` | `⚠` | worker lost | Needs you |
 | `running` | `●` | running | Running |
+| `attached` | `●` | attached | Running |
 | `starting` | `◐` | starting | Running |
 | `retrying` | `↻` | retrying | Running |
 | `cancelling` | `⊘` | stopping | Running |
@@ -434,7 +496,7 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for each worker-finished, question or message notice the parent agent received |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |
@@ -642,20 +704,18 @@ nothing.
 ### Attach, switch and delete
 
 Enter in the detail view attaches the agent in the foreground. The hub
-validates the exact session ID against the durable store first; a deleted or
-missing agent is rejected in place, and a validation read never stops or
-foregrounds a worker. Foregrounding is an ownership handoff, not a second
-observer: for an active agent the worker and its owned terminals are stopped,
-the worker lease is verified to have ended, and the normal TUI opens with the
-same `session_id`, project directory and durable journals. Completed, failed,
-cancelled and orphaned agents open directly through the same resume path.
+validates the exact session ID against the durable store first. For a hosted
+session, the view reconnects to the same live runtime with a new controller
+generation. For a background worker launched from a saved request, attachment
+stops the worker and its owned terminals, verifies that its lease ended, and
+opens the session by ID. Completed, failed, cancelled, and orphaned sessions
+open through the saved-session resume path.
 
 Inside a session the hub asks first — `Switch to … ? This session reopens when
 you leave it.` — then closes the current session, opens the chosen agent or
 saved session, and reopens the original session when that one ends. Switching
-waits for a running turn to finish or be stopped. After `/background` the
-session hands over to its worker and the hub opens with the new background
-agent selected.
+waits for a running turn to finish or be stopped. After a hosted session detaches, the terminal returns to the shell.
+The session is available in the hub.
 
 Delete is asynchronous and recoverable. `Ctrl+X` immediately captures the
 selected or marked agents and starts one durable operation; no confirmation is

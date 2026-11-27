@@ -1368,19 +1368,20 @@ def test_repeated_detach_in_one_tui_does_not_prepare_twice(
 async def test_tui_session_routes_background_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.background import integration
     from agenthicc.runners.tui_session import TUISession
-    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.runtime.commands import SendMessageCommand
+    from tests.unit.test_tui_session_coverage import _make_session
 
-    monkeypatch.setattr(integration, "_handoff", lambda session: True)
-    fake = SimpleNamespace(dispatch_slash=lambda text: False)
-    # With no running tool the alias hands off at once (it waits for a tool).
-    fake._request_background_handoff = lambda: TUISession._request_background_handoff(fake)
-    fake._run_background_handoff = lambda: TUISession._run_background_handoff(fake)
-    fake._allow_phase_pool_handoff = lambda: True
-    fake._handoff_pending = False
-    fake._agent_task = None
-    fake._ctx = SimpleNamespace(app_state=AppState.create())
-    assert TUISession.dispatch_slash(fake, "/bg") is True
-    await TUISession.handle_send(fake, SimpleNamespace(text="/background"))
+    observed: list[TUISession] = []
+
+    def handoff(session: TUISession) -> bool:
+        observed.append(session)
+        return True
+
+    monkeypatch.setattr(integration, "_handoff", handoff)
+    session, _, _, _ = _make_session()
+    assert session.dispatch_slash("/bg")
+    await session.handle_send(SendMessageCommand(text="/background"))
+    assert observed == [session, session]
 
 
 @pytest.mark.asyncio

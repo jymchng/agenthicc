@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,7 +20,10 @@ from tests.subagent_sessions import (
     WORKER_RESULT,
     ScenarioTransport,
     attach,
+    detach_controller,
+    hosted_controller,
     send,
+    send_detached_input,
     spawn_call,
     tui,
     until,
@@ -27,6 +31,15 @@ from tests.subagent_sessions import (
 from tests.subagent_sessions import session as session
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(params=[False, True], ids=["attached", "detached"])
+async def phase_runtime(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[TUISession, bool]]:
+    detached = request.param is True
+    async with tui(tmp_path, monkeypatch, host_controller=detached) as instance:
+        yield instance, detached
 
 
 class GenerateWorkflow(WorkflowPlugin):
@@ -65,8 +78,9 @@ def transition(call_id: str = "transition") -> ToolCall:
 
 @pytest.mark.parametrize("transition_first", [True, False])
 async def test_a1_a2_a3_generate_releases_batch_then_collects_before_transition(
-    session: TUISession, transition_first: bool
+    phase_runtime: tuple[TUISession, bool], tmp_path: Path, transition_first: bool
 ) -> None:
+    session, detached = phase_runtime
     Path("source.txt").write_text("independent sibling read", encoding="utf-8")
     release_worker = asyncio.Event()
     worker_entered = asyncio.Event()
@@ -111,12 +125,15 @@ async def test_a1_a2_a3_generate_releases_batch_then_collects_before_transition(
             continue_parent.set()
             return reply("Waiting for the workers.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             assert not request.contains(WORKER_RESULT)
             collect = tool_call(
                 "collect_subagent_results", {"pool_id": pool_id(session)}, use_id="collect"
             )
-            return replace(collect, tool_calls=[*collect.tool_calls, transition("too-early")])
+            calls = [*collect.tool_calls, transition("too-early")]
+            if transition_first:
+                calls.reverse()
+            return replace(collect, tool_calls=calls)
         if sequence == 4:
             assert request.contains(WORKER_RESULT)
             journal = source_for(session).journal
@@ -162,6 +179,9 @@ async def test_a1_a2_a3_generate_releases_batch_then_collects_before_transition(
     assert len(script.main_requests) == 2
     assert (handle.phase_iteration, handle.checkpoint_revision) == phase_progress
     assert handle.current_phase == "generate"
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert (handle.phase_iteration, handle.checkpoint_revision) == phase_progress
     release_worker.set()
     async with asyncio.timeout(8):
         await task
@@ -172,8 +192,9 @@ async def test_a1_a2_a3_generate_releases_batch_then_collects_before_transition(
 
 
 async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
-    session: TUISession,
+    phase_runtime: tuple[TUISession, bool], tmp_path: Path
 ) -> None:
+    session, detached = phase_runtime
     release = asyncio.Event()
 
     async def worker(_: ModelRequest) -> Completion:
@@ -187,7 +208,7 @@ async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
             assert request.contains('"status": "running"'), request.messages
             return reply("Wait here.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": pool_id(session)}, use_id="collected"
             )
@@ -226,11 +247,18 @@ async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
     assert session._agent_task is None
     (pool,) = source_for(session).registry.handles()
     assert not pool.task.done()
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert handle.lifecycle == "paused"
     release.set()
     await pool.task
     assert len(script.main_requests) == 2
     assert not source_for(session).has_pending()
-    assert session.route("/workflow resume")
+    if detached:
+        send_detached_input(session, tmp_path, "/workflow resume")
+        await until(lambda: session._agent_task is not None)
+    else:
+        assert session.route("/workflow resume")
     resumed_task = session._agent_task
     assert resumed_task is not None
     async with asyncio.timeout(8):
@@ -238,7 +266,8 @@ async def test_a5_a6_pause_defers_terminal_wake_and_resumes_same_phase(
     assert handle.phase_invocation == invocation
     assert handle.lifecycle == "complete"
     assert len(script.main_requests) == 5
-    assert source_for(session).journal.delivered_subagent_pool_notifications() == {pool.pool_id}
+    (delivered,) = source_for(session).journal.delivered_subagent_worker_notifications()
+    assert delivered.startswith(f"subagent-worker:{pool.pool_id}:")
 
 
 async def test_a4_a7_operator_foreground_waits_in_shared_default_runner(
@@ -278,8 +307,9 @@ async def test_a4_a7_operator_foreground_waits_in_shared_default_runner(
 
 
 @pytest.mark.parametrize("manual_detach", [False, True])
+@pytest.mark.parametrize("terminal_handoff", [False, True])
 async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manual_detach: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manual_detach: bool, terminal_handoff: bool
 ) -> None:
     import json
     import re
@@ -289,7 +319,10 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
 
     setting = "foreground" if manual_detach else "background"
     async with tui(
-        tmp_path, monkeypatch, config_text=f'[subagents]\nspawn_mode="{setting}"\n'
+        tmp_path,
+        monkeypatch,
+        config_text=f'[subagents]\nspawn_mode="{setting}"\n',
+        host_controller=terminal_handoff,
     ) as session:
         registry = session._ctx.subagent_registry
         researcher = registry.get("researcher")
@@ -363,7 +396,7 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
                 assert not release.is_set() and not request.contains(WORKER_RESULT)
                 return reply("Preserve the Research phase while workers finish.")
             if sequence == 5:
-                assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+                assert request.contains(f"of pool {pool_id(session)} completed")
                 return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
             if sequence == 6:
                 assert request.contains(WORKER_RESULT)
@@ -410,6 +443,10 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
         assert not task.done() and len(script.main_requests) == 4
         state = conv.subagent_pool_state()
         assert state is not None and state.active
+        if terminal_handoff:
+            await detach_controller(session, tmp_path)
+            assert state == conv.subagent_pool_state()
+            assert len(script.main_requests) == 4
         release.set()
         await until(lambda: assets.is_set() or task.done())
         assert assets.is_set()
@@ -427,9 +464,11 @@ async def test_a1_a3_a4_a6_make_book_research_collects_then_validates_notes(
 
 @pytest.mark.parametrize("lost_hint", [False, True])
 async def test_a2_question_is_answered_and_same_phase_collects_even_if_hint_is_lost(
-    session: TUISession,
+    phase_runtime: tuple[TUISession, bool],
+    tmp_path: Path,
     lost_hint: bool,
 ) -> None:
+    session, detached = phase_runtime
     ask = asyncio.Event()
     question = "Which heading should be used?"
 
@@ -464,10 +503,10 @@ async def test_a2_question_is_answered_and_same_phase_collects_even_if_hint_is_l
                     "answer": "use the supplied heading",
                 },
             )
-        if sequence == 5 and not request.contains(f"Background subagent pool {pool} completed"):
+        if sequence == 5 and not request.contains(f"of pool {pool} completed"):
             return reply("The heading was answered.")
         if not request.contains(WORKER_RESULT):
-            assert request.contains(f"Background subagent pool {pool} completed")
+            assert request.contains(f"of pool {pool} completed")
             return tool_call("collect_subagent_results", {"pool_id": pool}, use_id="terminal")
         if not request.contains("Implementation marked complete"):
             return tool_call("mark_execute_complete", {"summary": "done"})
@@ -486,6 +525,9 @@ async def test_a2_question_is_answered_and_same_phase_collects_even_if_hint_is_l
     assert not task.done()
     handle = session._workflow_handle
     assert handle is not None
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert len(script.main_requests) == 2
     ask.set()
     async with asyncio.timeout(8):
         await task
@@ -495,8 +537,10 @@ async def test_a2_question_is_answered_and_same_phase_collects_even_if_hint_is_l
 
 @pytest.mark.parametrize("implicit_next", [None, "finish"])
 async def test_a3_implicit_phase_edges_wait_for_all_pools(
-    session: TUISession, implicit_next: str | None
+    phase_runtime: tuple[TUISession, bool], tmp_path: Path, implicit_next: str | None
 ) -> None:
+    session, detached = phase_runtime
+
     class Implicit(WorkflowPlugin):
         name = "implicit_phase_fixture"
         phases = [PhaseSpec("generate", next=implicit_next), PhaseSpec("finish")]
@@ -529,7 +573,7 @@ async def test_a3_implicit_phase_edges_wait_for_all_pools(
             tried_limit.set()
             return reply("I yielded while both pools run.")
         if sequence == 5:
-            assert request.contains(f"Background subagent pool {first} completed")
+            assert request.contains(f"of pool {first} completed")
             live = tool_call("collect_subagent_results", {"pool_id": second}, use_id="live")
             terminal = tool_call("collect_subagent_results", {"pool_id": first}, use_id="first")
             return replace(live, tool_calls=[*live.tool_calls, *terminal.tool_calls])
@@ -544,7 +588,7 @@ async def test_a3_implicit_phase_edges_wait_for_all_pools(
             one_collected.set()
             return reply("I yielded while the second pool runs.")
         if sequence == 7:
-            assert request.contains(f"Background subagent pool {second} completed")
+            assert request.contains(f"of pool {second} completed")
             return tool_call("collect_subagent_results", {"pool_id": second}, use_id="second")
         if sequence == 8:
             assert request.contains("Second worker evidence.")
@@ -568,6 +612,18 @@ async def test_a3_implicit_phase_edges_wait_for_all_pools(
     assert not task.done()
     handle = session._workflow_handle
     assert handle is not None
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert (
+            len(
+                [
+                    handle
+                    for handle in source_for(session).registry.handles()
+                    if not handle.task.done()
+                ]
+            )
+            == 2
+        )
     release_one.set()
     await until(lambda: one_collected.is_set() or task.done())
     assert not task.done()
@@ -601,7 +657,7 @@ async def test_a2_busy_phase_delivers_committed_read_before_notice_and_input(
             return tool_call("read_file", {"path": "sibling.txt"}, use_id="sibling-active")
         if sequence == 3:
             ordered = repr(request.messages)
-            notice = f"Background subagent pool {pool_id(session)} completed"
+            notice = f"of pool {pool_id(session)} completed"
             assert ordered.index("Active phase sibling evidence") < ordered.index(notice)
             assert ordered.index(notice) < ordered.index("Use my queued update.")
             assert ordered.count("Use my queued update.") == 1 and WORKER_RESULT not in ordered
@@ -627,12 +683,15 @@ async def test_a2_busy_phase_delivers_committed_read_before_notice_and_input(
     assert len(script.main_requests) == 5
 
 
+@pytest.mark.parametrize("terminal_handoff", [False, True])
 @pytest.mark.parametrize("exit_action", ["reset", "abandon", "timeout"])
 async def test_a5_phase_exit_settles_pool_or_preserves_ownership_for_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_action: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_action: str, terminal_handoff: bool
 ) -> None:
     config = "[execution]\nturn_timeout_s = 5.0\n" if exit_action == "timeout" else ""
-    async with tui(tmp_path, monkeypatch, config_text=config) as session:
+    async with tui(
+        tmp_path, monkeypatch, config_text=config, host_controller=terminal_handoff
+    ) as session:
         blocked = asyncio.Event()
 
         async def worker(_: ModelRequest) -> Completion:
@@ -649,7 +708,9 @@ async def test_a5_phase_exit_settles_pool_or_preserves_ownership_for_resume(
         attach_phase(session, script)
         if exit_action == "abandon":
             session._ctx.workflow_registry.register(GenerateWorkflow)
-            assert session.route(f"/workflow call {GenerateWorkflow.name} Wait with child.")
+            await session.handle_send(
+                SendMessageCommand(text=f"/workflow call {GenerateWorkflow.name} Wait with child.")
+            )
             task = session._agent_task
             assert task is not None
         else:
@@ -662,8 +723,11 @@ async def test_a5_phase_exit_settles_pool_or_preserves_ownership_for_resume(
         assert handle is not None
         source = source_for(session)
         (pool,) = source.registry.handles()
-        assert not session._request_background_handoff()
-        assert conv.notification() is not None and "Collect" in conv.notification()
+        if terminal_handoff:
+            await detach_controller(session, tmp_path)
+        else:
+            assert not session._request_background_handoff()
+            assert conv.notification() is not None and "Collect" in conv.notification()
         if exit_action != "timeout":
             session.handle_interrupt(InterruptAgentCommand(source="escape", disposition="pause"))
         async with asyncio.timeout(8):
@@ -678,7 +742,10 @@ async def test_a5_phase_exit_settles_pool_or_preserves_ownership_for_resume(
             )
             return
         command = "/workflow return --abandon" if exit_action == "abandon" else "/workflow reset"
-        assert session.route(command)
+        if terminal_handoff:
+            send_detached_input(session, tmp_path, command)
+        else:
+            assert session.route(command)
         await until(lambda: handle.lifecycle == "discarded")
         assert pool.task.cancelled()
         (record,) = source.journal.fold_subagent_pool_lifecycle()
@@ -688,9 +755,10 @@ async def test_a5_phase_exit_settles_pool_or_preserves_ownership_for_resume(
 
 @pytest.mark.parametrize("decision", ["approve_review", "reject_review"])
 async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
-    session: TUISession,
-    decision: str,
+    phase_runtime: tuple[TUISession, bool], tmp_path: Path, decision: str
 ) -> None:
+    session, detached = phase_runtime
+
     class Reviewed(WorkflowPlugin):
         name = "review_phase_fixture"
         phases = [
@@ -728,7 +796,7 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
             rejected = True
             return reply("Review will wait.")
         if sequence == 5:
-            assert request.contains(f"Background subagent pool {review_pool} completed")
+            assert request.contains(f"of pool {review_pool} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": review_pool}, use_id="review-collect"
             )
@@ -758,7 +826,7 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
             return reply("Pause before the regenerated findings arrive.")
         if sequence == 11:
             assert handle.phase_invocation == generate_invocations[1]
-            assert request.contains(f"Background subagent pool {generate_pool} completed")
+            assert request.contains(f"of pool {generate_pool} completed")
             return tool_call(
                 "collect_subagent_results", {"pool_id": generate_pool}, use_id="redo-collect"
             )
@@ -774,6 +842,9 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
     assert not task.done()
     handle = session._workflow_handle
     assert handle is not None and handle.current_phase == "review"
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert session._workflow_handle is handle
     release_review.set()
     if decision == "approve_review":
         async with asyncio.timeout(8):
@@ -794,7 +865,11 @@ async def test_a3_a4_review_transition_and_reentry_preserve_invocation(
     pool = source_for(session).registry.get(generate_pool)
     assert pool is not None
     await pool.task
-    assert session.route("/workflow resume")
+    if detached:
+        send_detached_input(session, tmp_path, "/workflow resume")
+        await until(lambda: session._agent_task is not None)
+    else:
+        assert session.route("/workflow resume")
     resumed = session._agent_task
     assert resumed is not None
     async with asyncio.timeout(8):
@@ -854,7 +929,7 @@ import sys
 from pathlib import Path
 from agenthicc.memory.journal import ConversationJournal
 from agenthicc.memory.journaled import JournaledShortTermMemory
-from agenthicc.subagents.delivery import background_pool_notice
+from agenthicc.subagents.delivery import background_worker_notice
 from agenthicc.subagents.phase import PhaseOwner, PhasePools, bind_phase_pools
 from lauren_ai._tools import ToolResult
 from lauren_ai._transport import Completion, TokenUsage, ToolCall
@@ -868,18 +943,24 @@ journal.subagent_pool_started(
 )
 journal.subagent_pool_backgrounded(pool_id="restart-pool", tool_result={"status": "running"})
 if seam != "live":
+    journal.subagent_worker_result(
+        pool_id="restart-pool", fingerprint="fingerprint", task_id="task-0",
+        agent_type="explorer", label="explorer #1", ok=True, text="terminal evidence",
+        error="", duration_ms=1.0, tool_calls=[], changed_paths=[], status="completed",
+    )
     journal.subagent_pool_finished(
         pool_id="restart-pool", total=1, succeeded=1, failed=0, text="terminal evidence",
     )
 if seam in {"message", "ack", "before-commit", "collected"}:
-    record, = journal.completed_background_subagent_pools()
+    record, = journal.undelivered_subagent_worker_results()
     memory = JournaledShortTermMemory(journal)
     memory.add_user_once(
-        background_pool_notice(record), message_id="subagent-completion:restart-pool",
+        background_worker_notice(record), message_id="subagent-worker:restart-pool:task-0:1",
     )
 if seam in {"ack", "before-commit", "collected"}:
-    journal.subagent_pool_notification_delivered(
-        pool_id="restart-pool", message_id="subagent-completion:restart-pool",
+    journal.subagent_worker_notification_delivered(
+        pool_id="restart-pool", task_id="task-0", attempt=1,
+        message_id="subagent-worker:restart-pool:task-0:1",
     )
 if seam in {"before-commit", "collected"}:
     class CrashMemory(JournaledShortTermMemory):
@@ -934,7 +1015,7 @@ os._exit(0)
                 handle.phase_invocation == identity.invocation
                 and handle.frame_id == identity.frame_id
             )
-            assert repr(request.messages).count("Background subagent pool restart-pool") == 1
+            assert repr(request.messages).count("of pool restart-pool") == 1
             if sequence == 1 and seam in {"before-commit", "collected"}:
                 assert request.contains("terminal evidence")
             if sequence == 1 and seam != "collected":
@@ -965,7 +1046,9 @@ os._exit(0)
         assert len(script.main_requests) == (2 if seam == "collected" else 4)
         assert not script.worker_requests and not source.registry.handles()
         assert source.journal.collected_phase_pools(identity.invocation) == {"restart-pool"}
-        assert source.journal.delivered_subagent_pool_notifications() == {"restart-pool"}
+        assert source.journal.delivered_subagent_worker_notifications() == {
+            "subagent-worker:restart-pool:task-0:1"
+        }
 
 
 async def test_a3_a5_admitted_execution_failure_is_terminal_and_collectable(
@@ -988,7 +1071,7 @@ async def test_a3_a5_admitted_execution_failure_is_terminal_and_collectable(
         if sequence == 2:
             (record,) = source_for(session).journal.fold_subagent_pool_lifecycle()
             assert record["status"] == "completed" and record["failed"] == 1
-            assert request.contains("0/1 succeeded, 1 failed")
+            assert request.contains(f"of pool {record['pool_id']} failed (1/1 workers")
             return tool_call("collect_subagent_results", {"pool_id": str(record["pool_id"])})
         if sequence == 3:
             assert request.contains("scripted settlement failure")
@@ -1093,8 +1176,9 @@ async def test_a4_unsupported_phase_routes_keep_foreground_without_detach(
 
 
 async def test_a3_a4_nested_frame_returns_only_after_its_pool_is_collected(
-    session: TUISession,
+    phase_runtime: tuple[TUISession, bool], tmp_path: Path
 ) -> None:
+    session, detached = phase_runtime
     release = asyncio.Event()
     child_yielded = asyncio.Event()
     identity: list[tuple[str, str]] = []
@@ -1114,7 +1198,7 @@ async def test_a3_a4_nested_frame_returns_only_after_its_pool_is_collected(
             child_yielded.set()
             return reply("Child is waiting.")
         if sequence == 3:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
         if sequence == 4:
             assert request.contains(WORKER_RESULT)
@@ -1128,11 +1212,16 @@ async def test_a3_a4_nested_frame_returns_only_after_its_pool_is_collected(
     script = ScenarioTransport(main, worker)
     attach_phase(session, script)
     session._ctx.workflow_registry.register(GenerateWorkflow)
-    assert session.route(f"/workflow call {GenerateWorkflow.name} Start nested Generate.")
+    await session.handle_send(
+        SendMessageCommand(text=f"/workflow call {GenerateWorkflow.name} Start nested Generate.")
+    )
     task = session._agent_task
     assert task is not None
     await until(lambda: child_yielded.is_set() or task.done())
     assert not task.done() and session._ctx.workflow_stack.depth == 1
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert session._ctx.workflow_stack.depth == 1
     release.set()
     async with asyncio.timeout(8):
         await task
@@ -1143,14 +1232,19 @@ async def test_a3_a4_nested_frame_returns_only_after_its_pool_is_collected(
     assert source_for(session).journal.collected_phase_pools(identity[0][1]) == {pool_id(session)}
 
 
+@pytest.mark.parametrize("terminal_handoff", [False, True])
 @pytest.mark.parametrize("governance", ["deadline", "capability-denied", "capability-allowed"])
 async def test_a7_owned_workers_obey_deadline_and_mode_capabilities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     governance: str,
+    terminal_handoff: bool,
 ) -> None:
     async with tui(
-        tmp_path, monkeypatch, mode="Plan" if governance == "capability-denied" else "Yolo"
+        tmp_path,
+        monkeypatch,
+        mode="Plan" if governance == "capability-denied" else "Yolo",
+        host_controller=terminal_handoff,
     ) as session:
         release = asyncio.Event()
         can_write = governance == "capability-allowed"
@@ -1211,6 +1305,9 @@ async def test_a7_owned_workers_obey_deadline_and_mode_capabilities(
         assert handle is not None
         conv = session._ctx.app_state.conversation
         await until(lambda: conv.phase_subagent_wait() == "waiting for phase subagents")
+        if terminal_handoff:
+            await detach_controller(session, tmp_path)
+            assert session._workflow_handle is handle
         release.set()
         async with asyncio.timeout(8):
             await task
@@ -1226,8 +1323,10 @@ async def test_a7_owned_workers_obey_deadline_and_mode_capabilities(
 
 
 async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
-    session: TUISession,
+    phase_runtime: tuple[TUISession, bool],
+    tmp_path: Path,
 ) -> None:
+    session, detached = phase_runtime
     from tests.unit.test_subagent_worktrees import _git, _worktrees
 
     root = Path.cwd()
@@ -1241,7 +1340,7 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
     _git(root, "commit", "-q", "-m", "initial")
     notes.write_text("Uncommitted parent notes.", encoding="utf-8")
     edited: set[str] = set()
-    release = asyncio.Event()
+    release = {"0": asyncio.Event(), "1": asyncio.Event()}
 
     async def worker(request: ModelRequest) -> Completion:
         description = str(request.messages[0]["content"])
@@ -1256,7 +1355,7 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
                 use_id=f"write-{index}",
             )
         edited.add(index)
-        await release.wait()
+        await release[index].wait()
         return reply(f"Chapter {index} saved.")
 
     async def main(request: ModelRequest, sequence: int) -> Completion:
@@ -1266,11 +1365,21 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
             assert request.contains('"status": "running"')
             return reply("Wait for the independent edits.")
         if sequence == 3:
-            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+            # The first worker finished: the parent hears about it at once, and
+            # the notice names the worker without carrying what it wrote.
+            assert request.contains(f"of pool {pool_id(session)} completed (1/2 workers")
+            assert not request.contains("the pool is complete")
+            assert not request.contains("Chapter 0 saved.")
+            return reply("One chapter is in. Waiting for the other.")
         if sequence == 4:
+            assert request.contains(
+                "(2/2 workers of this pool have finished; the pool is complete)"
+            )
+            return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+        if sequence == 5:
             assert request.contains("Chapter 0 saved.") and request.contains("Chapter 1 saved.")
             return tool_call("mark_execute_complete", {"summary": "Applied both worker patches."})
-        assert sequence == 5
+        assert sequence == 6
         return reply("Done.")
 
     script = ScenarioTransport(main, worker)
@@ -1290,14 +1399,22 @@ async def test_a7_parallel_mutating_phase_workers_use_distinct_worktrees(
     assert not list(root.glob("chapter-*.md"))
     handle = session._workflow_handle
     assert handle is not None
-    release.set()
+    if detached:
+        await detach_controller(session, tmp_path)
+        assert [Path(path) for path in _worktrees(root) if Path(path) != root] == worktrees
+    conv = session._ctx.app_state.conversation
+    release["0"].set()
+    await until(lambda: len(script.main_requests) == 3)
+    await until(lambda: conv.phase_subagent_wait() == "waiting for phase subagents")
+    assert len(script.main_requests) == 3 and not task.done()
+    release["1"].set()
     async with asyncio.timeout(8):
         await task
     assert [path.read_text(encoding="utf-8") for path in sorted(root.glob("chapter-*.md"))] == [
         "Chapter 0",
         "Chapter 1",
     ]
-    assert len(script.main_requests) == 5
+    assert len(script.main_requests) == 6
     assert handle.lifecycle == "complete"
     assert source_for(session).journal.collected_phase_pools(handle.phase_invocation) == {
         pool_id(session)
@@ -1359,3 +1476,346 @@ async def test_a2_a6_parked_phase_answers_input_while_pool_still_runs(
         await task
     assert handle.lifecycle == "complete"
     assert len(script.main_requests) == 7
+
+
+async def test_hosted_pool_keeps_the_retry_budget_during_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lauren_ai._exceptions import TransientTransportError
+
+    from agenthicc.runners import retry
+
+    config = "[execution]\ntransport_max_retries = 2\ntransport_retry_base_delay_s = 0.001\n"
+    async with tui(tmp_path, monkeypatch, config_text=config, host_controller=True) as session:
+        at_backoff, continue_backoff = asyncio.Event(), asyncio.Event()
+        observed_retries: list[int] = []
+        attempts = 0
+        run_with_retry = retry.run_with_transport_retry
+
+        async def observe_attempt(turn, **options):
+            if options.get("on_retry") is not None:
+                return await run_with_retry(turn, **options)
+
+            async def on_retry(
+                attempt: int, limit: int, delay: float, error: BaseException
+            ) -> None:
+                assert limit == 2 and delay >= 0 and isinstance(error, TransientTransportError)
+                observed_retries.append(attempt)
+                at_backoff.set()
+                await continue_backoff.wait()
+
+            return await run_with_retry(turn, **options, on_retry=on_retry)
+
+        monkeypatch.setattr(retry, "run_with_transport_retry", observe_attempt)
+
+        async def worker(_: ModelRequest) -> Completion:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise TransientTransportError("provider limit", status_code=429)
+            return reply(WORKER_RESULT)
+
+        async def main(request: ModelRequest, sequence: int) -> Completion:
+            if sequence == 1:
+                return spawn_call()
+            if sequence == 2:
+                return reply("Wait for the rate-limited worker.")
+            if sequence == 3:
+                return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+            if sequence == 4:
+                assert request.contains(WORKER_RESULT)
+                return transition()
+            assert sequence == 5
+            return reply("Collected after two provider retries.")
+
+        script = ScenarioTransport(main, worker)
+        attach_phase(session, script)
+        select_generate(session)
+        running = await send(session, "Exercise a rate-limited worker across detach.")
+        await until(at_backoff.is_set)
+        await detach_controller(session, tmp_path)
+        assert observed_retries == [1] and attempts == 1
+        assert not running.done()
+        continue_backoff.set()
+        async with asyncio.timeout(8):
+            await running
+        assert observed_retries == [1, 2] and attempts == 3
+        worker_results = source_for(session).journal.fold_subagent_worker_results()
+        assert len(worker_results) == 1 and worker_results[0]["ok"] is True
+        assert worker_results[0].get("attempt", 1) == 1
+
+
+async def test_controller_changes_while_pool_admission_and_sibling_exchange_are_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.background.store import BackgroundStore
+    from agenthicc.runners.hosted_session import hosted_terminal_status
+    from agenthicc.subagents.pool import SubagentPool
+
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        admitting = asyncio.Event()
+        release_admission = asyncio.Event()
+        worker_running = asyncio.Event()
+        release_worker = asyncio.Event()
+        prepare_isolation = SubagentPool._prepare_isolation
+        Path("independent.txt").write_text("independent sibling result", encoding="utf-8")
+
+        async def prepare(pool, selected=None):
+            admitting.set()
+            await release_admission.wait()
+            await prepare_isolation(pool, selected)
+
+        monkeypatch.setattr(SubagentPool, "_prepare_isolation", prepare)
+
+        async def worker(_: ModelRequest) -> Completion:
+            worker_running.set()
+            await release_worker.wait()
+            return reply(WORKER_RESULT)
+
+        async def main(request: ModelRequest, sequence: int) -> Completion:
+            if sequence == 1:
+                spawn = spawn_call()
+                sibling = tool_call("read_file", {"path": "independent.txt"}, use_id="sibling")
+                return replace(spawn, tool_calls=[*spawn.tool_calls, *sibling.tool_calls])
+            if sequence == 2:
+                assert request.contains('"status": "running"')
+                assert request.contains("independent sibling result")
+                return reply("The admitted pool is still working.")
+            if not request.contains(WORKER_RESULT):
+                return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
+            if not request.contains("Implementation marked complete"):
+                return tool_call("mark_execute_complete", {"summary": "Collected after detach"})
+            return reply("Completed after the original pool exchange.")
+
+        script = ScenarioTransport(main, worker)
+        attach_phase(session, script)
+        select_generate(session)
+        running = await send(session, "Start an independent pool and read the source.")
+        await until(admitting.is_set)
+        await detach_controller(session, tmp_path)
+        assert not running.done() and len(script.main_requests) == 1
+        store = BackgroundStore(tmp_path / "background")
+        record = store.get(session._ctx.session_id)
+        assert (await hosted_terminal_status(record))["pools"] == []
+        release_admission.set()
+        await until(worker_running.is_set)
+        await until(lambda: len(script.main_requests) == 2)
+        release_worker.set()
+        async with asyncio.timeout(8):
+            await running
+        assert len(script.main_requests) == 5
+        assert len(script.worker_requests) == 1
+        assert len(source_for(session).journal.fold_subagent_pool_lifecycle()) == 1
+
+
+async def test_live_attach_rejects_old_controller_input_and_keeps_one_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.background.store import BackgroundStore
+    from agenthicc.runners.hosted_transport import ControllerEndpoint, connect_controller
+
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def main(_: ModelRequest, __: int) -> Completion:
+            entered.set()
+            await release.wait()
+            return reply("original turn finished")
+
+        async def worker(_: ModelRequest) -> Completion:
+            pytest.fail("No worker is needed for a controller-fence test")
+
+        attach(session, ScenarioTransport(main, worker))
+        task = await send(session, "Hold a direct turn while controllers exchange authority.")
+        await until(entered.is_set)
+        await detach_controller(session, tmp_path)
+        store = BackgroundStore(tmp_path / "background")
+        original = store.get(session._ctx.session_id)
+        assert original.live_handoff is not None
+        endpoint = ControllerEndpoint.load(Path(original.artifact_dir) / ".controller")
+        hello = {
+            "type": "attach",
+            "generation": original.live_handoff.generation,
+            "columns": 160,
+            "rows": 40,
+        }
+        client = await connect_controller(endpoint)
+        try:
+            await client.send(hello)
+            first = await client.receive()
+            assert first["type"] == "ready"
+            active = store.get(original.session_id)
+            assert active.worker_pid == original.worker_pid and active.attempt == original.attempt
+            assert active.live_handoff is not None and active.live_handoff.generation == 2
+            await client.send({"type": "key", "generation": 1, "key": "CTRL_C", "text": ""})
+            assert await client.receive() == {"type": "rejected", "code": "stale_controller"}
+            conflicting = await connect_controller(endpoint)
+            try:
+                await conflicting.send({**hello, "generation": 2})
+                refusal = await conflicting.receive()
+                assert refusal["type"] == "error" and "already owns" in str(refusal["message"])
+            finally:
+                await conflicting.close()
+            assert not task.done()
+        finally:
+            await client.close()
+
+        view = session._hosted_view
+        assert view is not None
+        await until(lambda: not view.attached)
+        reconnect = await connect_controller(endpoint)
+        try:
+            await reconnect.send({**hello, "generation": 2})
+            second = await reconnect.receive()
+            assert second["type"] == "ready" and second["generation"] == 3
+            assert store.get(original.session_id).attempt == original.attempt
+            release.set()
+            async with asyncio.timeout(8):
+                await task
+        finally:
+            await reconnect.close()
+
+
+async def test_terminal_bound_operation_blocks_cutover_until_it_releases_the_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.background.store import BackgroundStore
+
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        provider = asyncio.Event()
+        editing, release_editor = asyncio.Event(), asyncio.Event()
+
+        async def main(_: ModelRequest, __: int) -> Completion:
+            await provider.wait()
+            return reply("Finished")
+
+        async def worker(_: ModelRequest) -> Completion:
+            pytest.fail("No worker should be started by terminal interaction")
+
+        async def edit() -> None:
+            editing.set()
+            await release_editor.wait()
+
+        attach(session, ScenarioTransport(main, worker))
+        turn = await send(session, "Keep the original turn running.")
+        async with hosted_controller(session, tmp_path) as (view, stream, generation):
+            operation = asyncio.create_task(view.run_terminal_operation(edit))
+            try:
+                await editing.wait()
+                request = {"type": "detach", "generation": generation}
+                await stream.send(request)
+                assert await stream.receive() == {
+                    "type": "rejected",
+                    "code": "physical_terminal_required",
+                }
+                assert BackgroundStore(tmp_path / "background").active_sessions() == []
+                assert not turn.done()
+                release_editor.set()
+                await operation
+                await stream.send(request)
+                accepted = await stream.receive()
+                assert accepted["type"] == "detached"
+            finally:
+                release_editor.set()
+                await operation
+        provider.set()
+        async with asyncio.timeout(8):
+            await turn
+
+
+async def test_live_approval_preserves_the_request_under_background_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agenthicc.background.inbox import BackgroundInteractionInbox, InboxConflict
+    from agenthicc.background.model import SessionStatus
+    from agenthicc.background.store import BackgroundStore
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalRequester
+
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        entered = asyncio.Event()
+
+        async def main(_: ModelRequest, __: int) -> Completion:
+            entered.set()
+            await asyncio.Event().wait()
+            return reply("Unreachable.")
+
+        async def worker(_: ModelRequest) -> Completion:
+            pytest.fail("The operator test constructs one request directly")
+
+        attach(session, ScenarioTransport(main, worker))
+        await send(session, "Keep this original turn alive during approval.")
+        await entered.wait()
+        request = ApprovalRequest(
+            tool_name="write_file",
+            tool_use_id="write-subagent",
+            tool_input={"path": "fixture.txt"},
+            capabilities=frozenset({"write"}),
+            event=asyncio.Event(),
+            request_id="approval-ac5",
+            requester=ApprovalRequester(
+                label="Executor 1",
+                agent_type="executor",
+                pool_id="fixture-pool",
+                worker_id="fixture-worker",
+            ),
+        )
+        approval = asyncio.create_task(session._ctx.approval_svc.request_approval(request))
+        await until(lambda: session._ctx.app_state.pending_approval() is not None)
+        await detach_controller(session, tmp_path)
+        store = BackgroundStore(tmp_path / "background")
+        session_id = session._ctx.session_id
+        await until(lambda: store.get(session_id).status is SessionStatus.WAITING_APPROVAL)
+        record = store.get(session_id)
+        inbox = BackgroundInteractionInbox(store)
+        await until(lambda: inbox.get(record.approval_item_id).status == "pending")
+        item = inbox.get(record.approval_item_id)
+        assert item.request_id == request.request_id
+        assert item.target["requester"]["worker_id"] == "fixture-worker"
+        inbox.respond(
+            item.item_id,
+            {"allowed": True},
+            expected_version=item.version,
+            idempotency_key="operator-wins",
+        )
+        with pytest.raises(InboxConflict):
+            inbox.respond(
+                item.item_id,
+                {"allowed": False},
+                expected_version=item.version,
+                idempotency_key="late-offer",
+            )
+        async with asyncio.timeout(8):
+            response = await approval
+        assert response.allowed and response.request_id == request.request_id
+        await until(lambda: inbox.get(item.item_id).status == "delivered")
+
+
+@pytest.mark.parametrize(
+    "frame,message",
+    [
+        ({"type": "resize", "columns": "wide", "rows": 30}, "Invalid terminal size"),
+        ({"type": "resize", "columns": 10, "rows": 30}, "Terminal size outside supported limits"),
+        ({"type": "key", "key": "CHAR", "text": 0}, "Invalid terminal input text"),
+        ({"type": "key", "key": "BOGUS", "text": "x"}, "Unknown terminal key"),
+        ({"type": "editor_done", "exit_status": 0}, "Invalid editor result"),
+        ({"type": "invalid"}, "Invalid terminal input"),
+    ],
+)
+async def test_hosted_controller_validates_input_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frame: dict[str, object],
+    message: str,
+) -> None:
+    async with tui(tmp_path, monkeypatch, host_controller=True) as session:
+        async with hosted_controller(session, tmp_path) as (view, stream, generation):
+            await stream.send(
+                {"type": "resize", "columns": 100, "rows": 35, "generation": generation}
+            )
+            await stream.send({**frame, "generation": generation})
+            error = await stream.receive()
+            assert error["type"] == "error" and error["message"] == message
+            assert (view.columns, view.rows) == (100, 35)
+            assert session._agent_task is None

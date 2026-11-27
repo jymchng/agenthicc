@@ -24,6 +24,7 @@ from agenthicc.runners.process_lease import (
     InterProcessLock,
     InterProcessLockError,
     atomic_publish,
+    atomic_replace,
     directory_fsync,
     owner_alive,
     process_identity,
@@ -40,8 +41,13 @@ __all__ = [
     "SessionOwnerInfo",
     "SessionOwnerLease",
     "SessionStorageError",
+    "LiveInteractiveRuntime",
     "default_sessions_dir",
+    "discover_interactive_runtimes",
     "format_session_conflict",
+    "interactive_registry_dir",
+    "register_interactive_runtime",
+    "unregister_interactive_runtime",
 ]
 
 SESSION_OWNER_SCHEMA_VERSION = 1
@@ -588,3 +594,135 @@ class SessionOpenCoordinator:
         return (
             float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
         )
+
+
+# ── hosted interactive runtimes the agents hub can list ─────────────────────
+#
+# A hosted interactive session owns its lease and runs its agent in a process of
+# its own, but it has no background record until the operator detaches it. Until
+# then the agents hub knew it only as a saved session: a dim, static row that
+# reads like a finished one, while the agent behind it idled for its subagents
+# or worked beside them.
+#
+# The runtime therefore leaves a small marker in ``~/.agenthicc/interactive``
+# while it runs, and the hub reads that directory. A marker is a hint, never an
+# authority: every entry is checked against the session's lease, so a runtime
+# that died without removing its marker is dropped (and its marker deleted) the
+# next time the directory is read.
+
+#: The entrypoint a hosted interactive runtime records in its lease.
+HOSTED_ENTRYPOINT = "hosted-tui"
+#: Markers read per call, so a corrupt directory cannot slow the hub.
+MAX_INTERACTIVE_MARKERS = 256
+
+
+@dataclass(frozen=True, slots=True)
+class LiveInteractiveRuntime:
+    """One verified, running hosted interactive session."""
+
+    session_id: str
+    cwd: str
+    pid: int
+    started_at: float
+    #: The session's directory, which holds its conversation journal.
+    session_dir: Path
+
+
+def interactive_registry_dir(sessions_dir: Path | None = None) -> Path:
+    """The directory of runtime markers, beside the sessions directory."""
+    return (sessions_dir or default_sessions_dir()).parent / "interactive"
+
+
+def _interactive_marker(session_id: str, sessions_dir: Path | None) -> Path:
+    # The lease store rejects an unsafe identifier, so a marker never escapes its directory.
+    SessionOwnerStore(sessions_dir).session_path(session_id)
+    return interactive_registry_dir(sessions_dir) / f"{session_id}.json"
+
+
+def register_interactive_runtime(
+    lease: SessionOwnerLease, *, cwd: Path, sessions_dir: Path | None = None
+) -> None:
+    """Record that the runtime holding *lease* is running, for the hub."""
+    info = lease.info
+    payload = {
+        "session_id": info.session_id,
+        "owner_id": info.owner_id,
+        "pid": info.pid,
+        "cwd": str(cwd),
+        "started_at": info.acquired_at,
+    }
+    atomic_replace(
+        _interactive_marker(info.session_id, sessions_dir),
+        json.dumps(payload).encode(),
+        prefix=".interactive-",
+    )
+
+
+def unregister_interactive_runtime(session_id: str, *, sessions_dir: Path | None = None) -> None:
+    """Remove a runtime's marker; a missing one is not an error."""
+    try:
+        _interactive_marker(session_id, sessions_dir).unlink(missing_ok=True)
+    except (OSError, SessionLeaseError, ValueError):
+        return
+
+
+def _read_marker(path: Path) -> dict[str, object] | None:
+    try:
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def discover_interactive_runtimes(
+    sessions_dir: Path | None = None,
+) -> list[LiveInteractiveRuntime]:
+    """Every hosted interactive session whose lease is held by a live process.
+
+    A marker whose lease is no longer active, is held by another runtime, or is
+    unreadable is deleted. The result is ordered by start time, newest first.
+    """
+    directory = interactive_registry_dir(sessions_dir)
+    try:
+        with os.scandir(directory) as entries:
+            markers = sorted(entry.path for entry in entries if entry.name.endswith(".json"))[
+                :MAX_INTERACTIVE_MARKERS
+            ]
+    except OSError:
+        return []
+    owners = SessionOwnerStore(sessions_dir)
+    live: list[LiveInteractiveRuntime] = []
+    for name in markers:
+        path = Path(name)
+        data = _read_marker(path)
+        session_id = data.get("session_id") if data is not None else None
+        owner_id = data.get("owner_id") if data is not None else None
+        try:
+            inspection = (
+                owners.inspect(session_id) if isinstance(session_id, str) and session_id else None
+            )
+        except (OSError, SessionLeaseError, ValueError):
+            inspection = None
+        owner = inspection.owner if inspection is not None else None
+        if (
+            data is None
+            or inspection is None
+            or inspection.state != "active"
+            or owner is None
+            or owner.entrypoint != HOSTED_ENTRYPOINT
+            or owner.owner_id != owner_id
+            or path.stem != session_id
+        ):
+            path.unlink(missing_ok=True)
+            continue
+        cwd = data.get("cwd")
+        live.append(
+            LiveInteractiveRuntime(
+                session_id=owner.session_id,
+                cwd=cwd if isinstance(cwd, str) else "",
+                pid=owner.pid,
+                started_at=owner.acquired_at,
+                session_dir=owners.session_path(owner.session_id),
+            )
+        )
+    return sorted(live, key=lambda item: (-item.started_at, item.session_id))

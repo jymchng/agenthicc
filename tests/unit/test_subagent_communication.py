@@ -492,8 +492,8 @@ async def test_the_registry_keeps_running_pools_and_a_bounded_number_of_finished
     await live
 
 
-async def test_listing_pools_marks_a_background_notice_still_to_deliver(tmp_path: Path) -> None:
-    """SUBAGENT-11 goal 7: a row says whether its completion notice is pending."""
+async def test_listing_pools_counts_the_worker_notices_still_to_deliver(tmp_path: Path) -> None:
+    """SUBAGENT-11 goal 7: a row says how many worker finish notices are pending."""
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.subagents.communication import (
         PoolContinuationRegistry,
@@ -507,8 +507,26 @@ async def test_listing_pools_marks_a_background_notice_still_to_deliver(tmp_path
                 pool_id=pool_id,
                 fingerprint=f"fp-{pool_id}",
                 parent_run_id="turn-1",
-                tasks=[{"task_id": "task-0", "agent_type": "explorer"}],
+                tasks=[
+                    {"task_id": "task-0", "agent_type": "explorer"},
+                    {"task_id": "task-1", "agent_type": "explorer"},
+                ],
             )
+            for task_id in ("task-0", "task-1"):
+                journal.subagent_worker_result(
+                    pool_id=pool_id,
+                    fingerprint=f"fp-{pool_id}",
+                    task_id=task_id,
+                    agent_type="explorer",
+                    label=task_id,
+                    ok=True,
+                    text="done",
+                    error="",
+                    duration_ms=1.0,
+                    tool_calls=[],
+                    changed_paths=[],
+                    status="completed",
+                )
             if background:
                 journal.subagent_pool_backgrounded(
                     pool_id=pool_id, tool_result={"status": "backgrounded", "pool_id": pool_id}
@@ -522,14 +540,17 @@ async def test_listing_pools_marks_a_background_notice_still_to_deliver(tmp_path
         }
 
         rows = {row["pool_id"]: row for row in (await tools["list_subagent_pools"]())["pools"]}
-        assert rows["pool-bg"]["notice_pending"] is True and rows["pool-bg"]["background"] is True
-        assert rows["pool-fg"]["notice_pending"] is False
+        assert rows["pool-bg"]["notices_pending"] == 2 and rows["pool-bg"]["background"] is True
+        assert rows["pool-fg"]["notices_pending"] == 0
 
-        journal.subagent_pool_notification_delivered(
-            pool_id="pool-bg", message_id="subagent-completion:pool-bg"
+        journal.subagent_worker_notification_delivered(
+            pool_id="pool-bg",
+            task_id="task-0",
+            attempt=1,
+            message_id=journal.subagent_worker_message_id("pool-bg", "task-0", 1),
         )
         rows = {row["pool_id"]: row for row in (await tools["list_subagent_pools"]())["pools"]}
-        assert rows["pool-bg"]["notice_pending"] is False
+        assert rows["pool-bg"]["notices_pending"] == 1
     finally:
         journal.close()
 

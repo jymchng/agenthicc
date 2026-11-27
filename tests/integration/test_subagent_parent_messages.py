@@ -188,7 +188,7 @@ async def test_workflow_parent_update_wakes_only_the_owning_phase(session: TUISe
             received.set()
             return reply("I received the worker's update.")
         if sequence == 4:
-            assert request.contains(f"Background subagent pool {pool_id(session)} completed")
+            assert request.contains(f"of pool {pool_id(session)} completed")
             return tool_call("collect_subagent_results", {"pool_id": pool_id(session)})
         if sequence == 5:
             assert request.contains(WORKER_RESULT)

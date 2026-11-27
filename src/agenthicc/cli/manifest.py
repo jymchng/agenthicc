@@ -81,6 +81,13 @@ BUILTIN_COMMANDS: tuple[CommandRef, ...] = (
     ),
     _ref("background", "agents_status", "agents", "status", help="Show one background agent"),
     _ref("background", "agents_cancel", "agents", "cancel", help="Stop a background agent"),
+    _ref(
+        "background",
+        "agents_stop_worker",
+        "agents",
+        "stop-worker",
+        help="Stop one subagent in a detached live session",
+    ),
     _ref("background", "agents_resume", "agents", "resume", help="Resume a background agent"),
     _ref("background", "agents_retry", "agents", "retry", help="Retry a failed background agent"),
     _ref(

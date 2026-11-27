@@ -8,6 +8,8 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -322,12 +324,33 @@ class BackgroundInputInbox:
         ):
             raise InvalidSessionTransition("Background session owner changed; reopen details")
 
+    @contextmanager
+    def freeze_for_controller_change(self, session: BackgroundSession) -> Iterator[bool]:
+        """Hold the input acceptance fence until the controller changes."""
+
+        path, lock_path = self._paths(session.session_id)
+        with InterProcessLock(lock_path):
+            owner_hash = self._owner_hash(session.lease_token)
+            pending = any(
+                record.get("state") in {"accepted", "claimed"}
+                and (
+                    record.get("deferred") is True
+                    or (
+                        record.get("owner_attempt") == session.attempt
+                        and record.get("owner_hash") == owner_hash
+                    )
+                )
+                for record in self._projection(self._events(path)).values()
+            )
+            yield pending
+
     def claim_next(
         self,
         session_id: str,
         *,
         owner_attempt: int,
         lease_token: str,
+        mark_delivered: bool = True,
     ) -> BackgroundInput | None:
         """Claim the oldest accepted command for the current worker attempt."""
         path, lock_path = self._paths(session_id)
@@ -361,14 +384,11 @@ class BackgroundInputInbox:
                     # accepted for a different owner. It remains in the log
                     # for operator diagnosis rather than being replayed.
                     continue
+                state = "delivered" if mark_delivered else "claimed"
                 claimed = {
-                    # The worker claims only at the safe tool boundary where
-                    # the AgentTurnRunner can immediately append the user
-                    # message before its next model request. This is the
-                    # owner-side delivery acknowledgement exposed to the UI.
-                    "action": "delivered",
+                    "action": state,
                     "message_id": record.get("message_id"),
-                    "state": "delivered",
+                    "state": state,
                     "state_changed_at": time.time(),
                 }
                 self._append(path, claimed)

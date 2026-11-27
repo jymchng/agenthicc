@@ -61,6 +61,8 @@ class StatusLook:
 
 
 _LOOKS: dict[SessionStatus, StatusLook] = {
+    SessionStatus.ATTACHED: StatusLook("●", "attached", Group.RUNNING, "green"),
+    SessionStatus.HANDOFF_PREPARED: StatusLook("◐", "detaching", Group.RUNNING, "green"),
     SessionStatus.WAITING_APPROVAL: StatusLook(
         "◆", "needs approval", Group.NEEDS_YOU, "bold yellow"
     ),

@@ -103,7 +103,7 @@ class PhaseSubagentHost:
                     if notices:
                         status.set(
                             "phase subagent results ready"
-                            if any(notice.kind == "completion" for notice in notices)
+                            if any(notice.kind == "worker" for notice in notices)
                             else ""
                         )
                         deliver_notices(notices, memory, self.conversation)
