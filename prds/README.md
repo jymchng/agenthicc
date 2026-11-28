@@ -236,6 +236,30 @@ audit names the source that proves it.
 - [COMM-04 — Address workers across pools and nesting levels (implemented)](agent-comms-nov/COMM-04-cross-pool-and-nested-worker-addressing.md)
 - [COMM-05 — Let an agent message another agenthicc session (implemented; on by default)](agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md)
 
+### MCP series — MCP capabilities in agenthicc (proposed)
+
+An audit of agenthicc's MCP support read against `lauren-mcp` and the MCP
+specification (current revision `2026-07-28`), and the PRDs that close the gaps.
+Start with the audit: it lists every finding with the file that proves it, what
+was observed by running and what was only read, the order to do the work in, what
+`lauren-mcp` must provide, and the decisions the maintainer has to make.
+
+- [MCP-00 — MCP audit and programme](mcp-nov/MCP-00-mcp-audit-and-programme.md)
+- [MCP-01 — MCP works out of the box, or says exactly why it does not (P0)](mcp-nov/MCP-01-mcp-works-or-says-why-not.md)
+- [MCP-02 — One typed client adapter, and the contract agenthicc needs from lauren-mcp (P0)](mcp-nov/MCP-02-typed-client-adapter-and-lauren-mcp-contract.md)
+- [MCP-03 — A conformance harness: the real client against real servers, in CI](mcp-nov/MCP-03-mcp-conformance-harness-and-ci.md)
+- [MCP-04 — In-flight MCP calls can be cancelled, bounded and observed](mcp-nov/MCP-04-in-flight-call-control-and-server-telemetry.md)
+- [MCP-05 — A repository cannot start or feed an MCP server on its own](mcp-nov/MCP-05-trust-and-isolation-of-mcp-servers.md)
+- [MCP-06 — MCP tool metadata, classification and approval](mcp-nov/MCP-06-tool-metadata-classification-and-approval.md)
+- [MCP-07 — Skills, agents and workflows declare the MCP servers they need](mcp-nov/MCP-07-declared-mcp-dependencies.md)
+- [MCP-08 — MCP resources and prompts, usable by the operator and the model](mcp-nov/MCP-08-resources-and-prompts.md)
+- [MCP-09 — Servers can ask the operator, through one host-side input model](mcp-nov/MCP-09-server-initiated-requests.md)
+- [MCP-10 — OAuth for remote MCP servers](mcp-nov/MCP-10-oauth-for-remote-servers.md)
+- [MCP-11 — Many MCP tools without spending the whole context window on them](mcp-nov/MCP-11-catalog-scale-and-context-budget.md)
+- [MCP-12 — Configure MCP servers completely from the CLI, and import from other hosts](mcp-nov/MCP-12-configuration-ux-and-interop.md)
+- [MCP-13 — Speak the current MCP revision (2026-07-28) as well as the legacy one (P1)](mcp-nov/MCP-13-the-current-protocol-revision.md)
+- [MCP-14 — agenthicc as an MCP server (proposal, needs a decision)](mcp-nov/MCP-14-agenthicc-as-an-mcp-server.md)
+
 ### TOOLR series — tool robustness and effectiveness
 
 A review of every tool agenthicc offers its agents (60 built-in tools and the
