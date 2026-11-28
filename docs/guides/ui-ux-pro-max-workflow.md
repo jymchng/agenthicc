@@ -65,6 +65,60 @@ budget. Audit findings enter remediation only when that route includes the
 phase and the bounded remediation budget remains. Accessibility-only work does
 not regenerate a design system or force implementation.
 
+### The route-profile contract
+
+`complete_product_discovery` names one key: `details["scope"]`, with the three
+canonical values `broad`, `targeted`, and `accessibility_audit`. Anything else —
+an unknown word, an empty string, or no key at all — is treated as `broad`.
+
+Three further keys are accepted as input spellings, checked in this order after
+`scope`, so a model that names the field differently still routes correctly:
+`classification`, `route_profile`, and `profile`. An explicit `scope` always
+wins over an alias. Only the first non-empty value is considered.
+
+Spelling is not significant. Values are case-folded, trimmed, and have spaces
+and hyphens rewritten before lookup, and a bounded alias table maps the common
+variants onto the canonical vocabulary:
+
+| Accepted spelling | Canonical profile |
+| --- | --- |
+| `broad`, `broad_design`, `comprehensive`, `default`, `full`, `Broad`, `BROAD`, ` broad `, `broad-design` | `broad` |
+| `targeted`, `targeted_design_research`, `targeted_research`, `focused` | `targeted` |
+| `accessibility`, `accessibility_audit`, `a11y` | `accessibility_audit` |
+
+Only canonical values are ever persisted: a checkpoint written by the workflow
+carries one of the three keys above, so a stored profile always resolves to a
+phase tuple. A checkpoint that carries a legacy or unreadable value — including
+the empty string written by earlier versions — is restored as `broad` instead of
+failing to decode, and only a wrong *type* (for example a list) is rejected.
+
+A fallback is never silent. When a value has to be defaulted the run records why
+in `route_profile_fallback_source` and `route_profile_fallback_detail`
+(`checkpoint` or `product_discovery`, whichever saw the bad value first), and the
+`/workflow status` view renders one bounded line:
+
+```text
+Workflow  ui_ux_pro_max: route profile fell back to broad (source=product_discovery, value='unknown')
+```
+
+The invariant is enforced rather than assumed: the transition decision and the
+phase list used for indexing are both derived from the same normalised profile,
+so a phase the active profile does not schedule is impossible. If a topology
+mismatch is ever produced anyway, the workflow raises a typed
+`PhaseTopologyError` naming the workflow, the phase, the active profile, and the
+phases that profile does schedule. The TUI classifies it by type as a
+`configuration` failure and the row reads:
+
+```text
+PhaseTopologyError: ui_ux_pro_max: phase 'targeted_design_research' is not part
+of route profile 'broad'; scheduled phases: product_discovery,
+design_intelligence, design_system_synthesis, ... (+7 more)
+```
+
+The phase list is bounded, so the row stays one readable error.
+
+A bare `ValueError: tuple.index(x): x not in tuple` never reaches a transcript.
+
 ## Phase outputs
 
 The agents write full Markdown reports or implementation files with the

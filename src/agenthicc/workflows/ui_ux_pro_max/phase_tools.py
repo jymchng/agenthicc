@@ -47,7 +47,27 @@ def make_product_discovery_tools(
     async def complete_product_discovery(
         summary: str, details: dict[str, object] | None = None
     ) -> dict[str, object]:
-        """Record the product-discovery summary and any structured details."""
+        """Record the product-discovery summary and any structured details.
+
+        ``details["scope"]`` selects the route the workflow takes after this
+        phase, and it is the only key that does so. Allowed values:
+
+        ``"broad"``
+            New product or substantial redesign. Runs the full design path,
+            including design_intelligence, design_system_synthesis and
+            design_system_review.
+        ``"targeted"``
+            Component change or fix. Runs targeted_design_research and skips the
+            design-system synthesis/review pair.
+        ``"accessibility_audit"``
+            Audit only, no implementation. Skips experience_architecture and
+            design_remediation as well.
+
+        Anything else -- a missing key, ``""`` or an unrecognised word -- falls
+        back to ``"broad"``. ``classification``, ``route_profile`` and
+        ``profile`` are accepted as aliases for ``scope``, but ``scope`` is the
+        documented name; prefer it.
+        """
         return _record(
             event, data, decision="complete_product_discovery", summary=summary, details=details
         )

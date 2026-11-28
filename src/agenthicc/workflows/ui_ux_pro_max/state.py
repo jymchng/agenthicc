@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
+from collections.abc import Sequence
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ MAX_TEXT_CHARS = 4_000
 MAX_LIST_ITEMS = 40
 MAX_ITEM_CHARS = 512
 MAX_RESUME_HISTORY = 100
+MAX_TOPOLOGY_NAMES = 24
+"""How many phase names a :class:`PhaseTopologyError` renders in its message."""
 
 PHASES_BY_PROFILE: dict[str, tuple[str, ...]] = {
     "broad": (
@@ -51,6 +54,123 @@ PHASES_BY_PROFILE: dict[str, tuple[str, ...]] = {
         "delivery",
     ),
 }
+
+DEFAULT_ROUTE_PROFILE = "broad"
+"""Profile used when a supplied route profile cannot be recognised."""
+
+ROUTE_PROFILE_ALIASES: dict[str, str] = {
+    "broad": "broad",
+    "broad_design": "broad",
+    "comprehensive": "broad",
+    "default": "broad",
+    "full": "broad",
+    "targeted": "targeted",
+    "targeted_design_research": "targeted",
+    "targeted_research": "targeted",
+    "focused": "targeted",
+    "accessibility": "accessibility_audit",
+    "accessibility_audit": "accessibility_audit",
+    "a11y": "accessibility_audit",
+}
+"""Lower-case, separator-normalised aliases accepted by the route profile.
+
+Every value maps onto a key of :data:`PHASES_BY_PROFILE`.  The alias table is the
+only place a human-supplied spelling is translated into the canonical
+vocabulary; nothing else may compare a raw value against ``"broad"``.
+"""
+
+_PROFILE_SEPARATORS = str.maketrans({" ": "_", "-": "_"})
+
+
+def _profile_alias_key(value: str) -> str:
+    """Return the canonical lookup key for a human-supplied profile spelling."""
+    collapsed = " ".join(value.casefold().split())
+    return collapsed.translate(_PROFILE_SEPARATORS).strip("_")
+
+
+def normalise_route_profile(value: object) -> tuple[str, bool]:
+    """Return ``(canonical_profile, fallback_used)`` for a supplied profile.
+
+    Canonical values in :data:`PHASES_BY_PROFILE` pass through untouched.
+    String aliases are lower-cased, trimmed, and separator-normalised before
+    alias lookup, so ``"Broad"``, ``"BROAD"``, ``" broad "`` and
+    ``"broad-design"`` all resolve to ``"broad"``.  Anything else -- including
+    ``None``, ``""`` and non-string types -- falls back to
+    :data:`DEFAULT_ROUTE_PROFILE` with ``fallback_used=True``.
+
+    The two return values must always be used together: a caller that takes the
+    profile but drops the flag reintroduces the silent-default bug this
+    function exists to remove.
+    """
+    if not isinstance(value, str):
+        return DEFAULT_ROUTE_PROFILE, True
+    if value in PHASES_BY_PROFILE:
+        return value, False
+    canonical = ROUTE_PROFILE_ALIASES.get(_profile_alias_key(value))
+    if canonical is None:
+        return DEFAULT_ROUTE_PROFILE, True
+    return canonical, False
+
+
+def _restored_route_profile(value: object) -> tuple[str, bool]:
+    """Return ``(canonical_profile, fallback_used)`` for a checkpoint value.
+
+    Only a wrong *type* is malformed enough to reject: the recorded session
+    checkpoints carry ``""``, so raising on it made the whole context
+    unrestorable (``checkpoint_context_from_payload`` swallowed the
+    ``ValueError`` and returned ``None``), which is how the run lost its cursor.
+    ``None``, ``""`` and any unrecognised word now normalise to the default and
+    report ``fallback_used=True`` so the caller can record where the bad value
+    came from.
+    """
+    if value is None:
+        return normalise_route_profile(None)
+    if not isinstance(value, str):
+        raise ValueError(
+            f"ui_ux_pro_max checkpoint contains a non-string route profile: {type(value).__name__}"
+        )
+    return normalise_route_profile(value)
+
+
+class PhaseTopologyError(RuntimeError):
+    """A phase is not a member of the route profile's phase tuple.
+
+    Raised instead of letting a bare ``tuple.index`` ``ValueError`` escape: the
+    failure is a configuration/topology mismatch, and the message has to name
+    the workflow, the offending phase, the active profile and the phases that
+    profile actually schedules.
+
+    ``failure_kind`` declares the UI recovery category so
+    :func:`agenthicc.runners.tui_session._workflow_failure_kind` reports
+    ``configuration`` by type instead of guessing from wording.  It must be a
+    :class:`agenthicc.runners.workflow_handle.WorkflowFailureKind` value; the
+    string is duplicated here to keep this module free of runner imports.
+    """
+
+    failure_kind = "configuration"
+
+    def __init__(
+        self,
+        workflow: str,
+        phase: str,
+        profile: str,
+        phases: Sequence[str],
+    ) -> None:
+        self.workflow = workflow
+        self.phase = phase
+        self.profile = profile
+        self.phases = tuple(phases)
+        # One error row, not a wall of text: bound both the per-name width and
+        # the number of names rendered, whatever the caller passed.
+        shown = [str(name)[:64] for name in self.phases[:MAX_TOPOLOGY_NAMES]]
+        scheduled = ", ".join(shown) if shown else "(none)"
+        hidden = len(self.phases) - len(shown)
+        if hidden > 0:
+            scheduled += f", ... (+{hidden} more)"
+        super().__init__(
+            f"{workflow}: phase {phase!r} is not part of route profile "
+            f"{profile!r}; scheduled phases: {scheduled}"
+        )
 
 
 class UiUxProMaxState(Enum):
@@ -110,6 +230,8 @@ class UiUxProMaxContext:
     resume_resolution_source: str = ""
     resume_resolution_reason: str = ""
     resume_reconciled: bool = False
+    route_profile_fallback_source: str = ""
+    route_profile_fallback_detail: str = ""
 
     project_root: str = ""
     project_name: str = ""
@@ -231,6 +353,32 @@ class UiUxProMaxContext:
             references=bounded_list(references or []),
         )
 
+    def record_route_profile_fallback(self, source: str, value: object) -> None:
+        """Record that an unusable route profile was seen and defaulted to broad.
+
+        ``source`` names where the value came from (``"checkpoint"``,
+        ``"product_discovery"``, ...) so a resumed run and the status view can
+        say *why* the default was used.  The first source wins: a resume that
+        merely re-reads an already-repaired checkpoint must not overwrite the
+        origin recorded by the run that actually saw the bad value.
+        """
+        if self.route_profile_fallback_source:
+            return
+        self.route_profile_fallback_source = bounded_text(source, 64)
+        self.route_profile_fallback_detail = bounded_text(repr(value), 128)
+
+    @property
+    def route_profile_fallback_diagnostic(self) -> str:
+        """Return a bounded one-line diagnostic, or ``""`` when nothing fell back."""
+        if not self.route_profile_fallback_source:
+            return ""
+        return bounded_text(
+            f"route profile fell back to {DEFAULT_ROUTE_PROFILE} "
+            f"(source={self.route_profile_fallback_source}, "
+            f"value={self.route_profile_fallback_detail or 'missing'})",
+            256,
+        )
+
     def to_checkpoint_payload(self) -> dict[str, object]:
         """Return a JSON-safe bounded checkpoint without conversation memory."""
         payload: dict[str, object] = {}
@@ -239,6 +387,11 @@ class UiUxProMaxContext:
                 continue
             if name == "state":
                 payload[name] = self.state.name
+            elif name == "route_profile":
+                # A checkpoint may only ever carry a canonical profile, so a
+                # context still holding a raw value is repaired on this write
+                # instead of persisting a profile no topology can resolve.
+                payload[name] = normalise_route_profile(value)[0]
             elif name == "artifacts":
                 payload[name] = {
                     key[:64]: {
@@ -279,9 +432,7 @@ class UiUxProMaxContext:
         state_name = payload.get("state")
         if not isinstance(state_name, str) or state_name not in UiUxProMaxState.__members__:
             raise ValueError("ui_ux_pro_max checkpoint contains an unknown workflow state")
-        route_profile = payload.get("route_profile", "broad")
-        if not isinstance(route_profile, str) or route_profile not in PHASES_BY_PROFILE:
-            raise ValueError("ui_ux_pro_max checkpoint contains an unknown route profile")
+        route_profile, restore_fallback = _restored_route_profile(payload.get("route_profile"))
         context = cls(
             intent=bounded_text(payload.get("intent", ""), 20_000),
             run_id=bounded_text(payload.get("run_id", ""), 256),
@@ -319,11 +470,15 @@ class UiUxProMaxContext:
             "fail_reason",
             "resume_resolution_source",
             "resume_resolution_reason",
+            "route_profile_fallback_source",
+            "route_profile_fallback_detail",
         )
         for name in string_fields:
             value = payload.get(name)
             if isinstance(value, str):
                 setattr(context, name, bounded_text(value))
+        if restore_fallback:
+            context.record_route_profile_fallback("checkpoint", payload.get("route_profile"))
         list_fields = (
             "completed_phases",
             "target_users",

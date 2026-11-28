@@ -365,6 +365,13 @@ class WorkflowRun:
     global ``execution.model``; the status bar shows this instead of the
     session model while the run is active.  Empty string = show session model."""
 
+    diagnostic: str = ""
+    """Bounded run-level note the workflow wants the operator to see (FR-7).
+
+    Example: ``route profile fell back to broad (source=checkpoint, value='')``.
+    Empty for a healthy run, so ``/status`` only grows a Workflow row when there
+    is something to report."""
+
 
 @dataclasses.dataclass
 class WorkflowContext:
