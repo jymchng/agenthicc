@@ -102,6 +102,9 @@ def _session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TUISession:
     )
     session._input_session = SimpleNamespace(request_exit=lambda: exits.append(True))  # type: ignore[assignment]
     session._agent_task = None
+    session._msg_queue = state.conversation.queue
+    session._workflow_handle_value = None
+    session._subagent_notices = None
     session._switch = None
     session._agents_service = None
     session._agents_settings = None
@@ -350,6 +353,78 @@ async def test_switching_waits_for_the_running_turn(
     )
 
 
+def _assert_switch_refused(session: TUISession, phrase: str) -> None:
+    session._switch_to(HubResult("attach", "other-agent"))
+    assert session.switch is None
+    assert session.exits == []  # type: ignore[attr-defined]
+    assert phrase in str(session._ctx.app_state.conversation.notification())
+
+
+async def test_switching_waits_for_queued_messages_after_the_turn_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Between turns ``_agent_task`` is empty, but a queued message is still work."""
+    session = _session(tmp_path, monkeypatch)
+    session._msg_queue.append("one more thing")
+    _assert_switch_refused(session, "queued message")
+
+
+async def test_switching_waits_for_a_workflow_that_is_between_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reported failure: Enter on a hub row closed a running workflow, which came back
+    paused with the agent Idle (``Product discovery 1/11 paused``)."""
+    session = _session(tmp_path, monkeypatch)
+    for lifecycle in ("running", "pausing", "resuming"):
+        session._workflow_handle_value = SimpleNamespace(lifecycle=lifecycle)  # type: ignore[assignment]
+        _assert_switch_refused(session, "workflow")
+
+
+async def test_switching_leaves_a_paused_workflow_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paused workflow is not running anything, so there is nothing to tear down."""
+    session = _session(tmp_path, monkeypatch)
+    session._workflow_handle_value = SimpleNamespace(lifecycle="paused")  # type: ignore[assignment]
+    session._switch_to(HubResult("attach", "other-agent"))
+    assert session.switch is not None and session.exits == [True]  # type: ignore[attr-defined]
+
+
+async def test_switching_waits_for_subagents_the_parent_yielded_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent that has yielded to running workers has no ``_agent_task``; closing the
+    session would cancel every worker (``parent_cancelled``)."""
+    session = _session(tmp_path, monkeypatch)
+    running = asyncio.get_running_loop().create_future()
+    session._subagent_notices = SimpleNamespace(  # type: ignore[assignment]
+        registry=SimpleNamespace(handles=lambda: [SimpleNamespace(task=running)]),
+        has_pending=lambda: False,
+    )
+    _assert_switch_refused(session, "subagent")
+    running.set_result(None)  # the workers have finished
+    session._switch_to(HubResult("attach", "other-agent"))
+    assert session.switch is not None
+
+
+async def test_switching_waits_for_a_notice_the_parent_has_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path, monkeypatch)
+    session._subagent_notices = SimpleNamespace(  # type: ignore[assignment]
+        registry=SimpleNamespace(handles=lambda: []), has_pending=lambda: True
+    )
+    _assert_switch_refused(session, "subagent")
+
+
+async def test_switching_waits_for_an_unanswered_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _session(tmp_path, monkeypatch)
+    session._ctx.app_state.pending_approval.set(object())  # type: ignore[arg-type]
+    _assert_switch_refused(session, "approval")
+
+
 def test_background_handoff_opens_the_hub_next(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -413,6 +488,35 @@ async def test_a_switched_session_reopens_its_origin_when_the_target_ends(
     monkeypatch.setattr(tui_session, "_switch_target_directory", target_directory)
     await tui_session._run_tui_session(resume_id="origin")
     assert calls == [("origin", None), ("target", "/projects/target"), ("origin", "/origin")]
+
+
+async def test_a_target_that_cannot_open_returns_to_the_origin_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hub says "This session reopens when you leave it". A target that times out while
+    it starts must not end the process with a traceback and strand the origin."""
+    from agenthicc.runners import tui_session
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    async def run_in(cwd: str | None, *, resume_id: str | None, **_kwargs: object) -> object:
+        calls.append((resume_id, cwd))
+        if resume_id == "target":
+            raise TimeoutError  # no text, as the report showed
+        return (
+            SessionSwitch("attach", "target", origin="origin", origin_cwd="/origin")
+            if len(calls) == 1
+            else None
+        )
+
+    async def target_directory(_action: str, target: str, **_kwargs: object) -> str:
+        return f"/projects/{target}"
+
+    monkeypatch.setattr(tui_session, "_run_tui_session_in", run_in)
+    monkeypatch.setattr(tui_session, "_switch_target_directory", target_directory)
+    await tui_session._run_tui_session(resume_id="origin")
+    assert calls == [("origin", None), ("target", "/projects/target"), ("origin", "/origin")]
+    assert "Unable to open session target: TimeoutError" in capsys.readouterr().err
 
 
 async def test_background_handoff_shows_the_hub_and_can_attach(

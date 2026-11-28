@@ -2134,7 +2134,20 @@ the session with `TUISession.switch` set to a frozen
 `runners.tui_session.SessionSwitch(action, target, origin, origin_cwd)`
 (`action` is `"attach"`, `"open_saved"` or `"hub"` after `/background`); the
 driver runs the target in its own project directory and reopens the origin
-session when the target ends. A switch waits for a running turn to finish.
+session when the target ends, including when the target cannot open (the failure
+is printed). `TUISession._switch_blocker()` refuses a switch, with the reason in
+the status line, while a turn or a running/pausing/resuming workflow is active,
+messages are queued, an approval is open, or subagents are working or unread; a
+paused workflow does not block. `/bg` in a hosted session ends the same way: the
+hosted client returns `SessionSwitch("hub", session_id, ...)` after the `detached`
+frame, so the agents hub opens with that agent selected.
+
+A hosted runtime's startup is bounded by silence, not build time
+(`runners.hosted_transport`): `HANDSHAKE_TIMEOUT` 15 s, `STARTING_INTERVAL_S` 2 s
+(the runtime sends `starting` while the session builds), `STARTUP_SILENCE_TIMEOUT_S`
+30 s, `LAUNCH_TIMEOUT_S` 60 s, and `INITIAL_CONTROLLER_WINDOW_S` 20 s, which opens when
+the session is ready. A failure is `HostedStartupError` with a cause; a launched
+runtime that never publishes is killed.
 
 ### MatchItem — `agenthicc.tui.trigger`
 

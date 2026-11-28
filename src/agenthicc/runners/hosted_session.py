@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -15,10 +16,12 @@ from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.runners.process_lease import atomic_replace, read_json_object
 from agenthicc.tui.terminal.backend import TerminalBackend, get_backend, terminal_stream
 
+from . import hosted_transport
 from .hosted_transport import (
     ControllerEndpoint,
     ControllerProtocolError,
     ControllerStream,
+    HostedStartupError,
     LocalControllerUnavailable,
     connect_controller,
 )
@@ -143,7 +146,12 @@ async def _display(
             out.write(f"\r\n● Session {session_id} is running in the background.\r\n{counts}")
             out.write(f"  Run agenthicc attach {session_id} to return.\r\n")
             out.flush()
-            return None
+            # ``/bg`` ends in the agents hub with the new agent selected, as it does for a
+            # terminal-owned session. Where no hub can open (a pipe, background disabled) the
+            # caller falls through to the shell, and the lines above are what the user sees.
+            from agenthicc.runners.tui_session import SessionSwitch
+
+            return SessionSwitch("hub", session_id, origin=session_id, origin_cwd=os.getcwd())
         elif kind == "finished":
             return _switch(frame.get("switch"))
         elif kind == "error":
@@ -152,10 +160,48 @@ async def _display(
             raise ControllerProtocolError("Unknown terminal output")
 
 
+async def _connect(endpoint: ControllerEndpoint) -> ControllerStream:
+    """Connect and authenticate, naming a runtime that is too busy to answer."""
+    try:
+        return await connect_controller(endpoint)
+    except TimeoutError as exc:
+        raise HostedStartupError(
+            f"The session runtime did not answer within {hosted_transport.HANDSHAKE_TIMEOUT:g} s; "
+            "the machine may be busy. Try again."
+        ) from exc
+
+
+async def _await_ready(stream: ControllerStream) -> dict[str, object]:
+    """Wait for ``ready`` while the runtime builds its session.
+
+    The wait is bounded by silence, not by how long the build takes: a runtime that is working
+    sends ``starting`` every :data:`hosted_transport.STARTING_INTERVAL_S`, so a large session or
+    a loaded host takes as long as it takes, while a runtime that has stopped answering is
+    reported after :data:`hosted_transport.STARTUP_SILENCE_TIMEOUT_S`.
+    """
+    announced = False
+    while True:
+        try:
+            async with asyncio.timeout(hosted_transport.STARTUP_SILENCE_TIMEOUT_S):
+                frame = await stream.receive()
+        except TimeoutError as exc:
+            raise HostedStartupError(
+                "The session runtime sent nothing for "
+                f"{hosted_transport.STARTUP_SILENCE_TIMEOUT_S:g} s while it was starting."
+            ) from exc
+        except (asyncio.IncompleteReadError, ConnectionError) as exc:
+            raise HostedStartupError("The session runtime stopped before it was ready.") from exc
+        if frame.get("type") != "starting":
+            return frame
+        if not announced:
+            announced = True
+            print("Starting the session…", file=sys.stderr, flush=True)
+
+
 async def _run_controller(
     endpoint: ControllerEndpoint, *, generation: int | None
 ) -> SessionSwitch | None:
-    stream = await connect_controller(endpoint)
+    stream = await _connect(endpoint)
     size = _terminal_size()
     try:
         await stream.send(
@@ -166,8 +212,7 @@ async def _run_controller(
                 "rows": size[1],
             }
         )
-        async with asyncio.timeout(20):
-            ready = await stream.receive()
+        ready = await _await_ready(stream)
         if ready.get("type") == "error":
             raise ControllerProtocolError(str(ready.get("message", "Unable to attach")))
         current = ready.get("generation")
@@ -312,20 +357,29 @@ async def run_hosted_terminal(config: CLIContext) -> SessionSwitch | None:
             BackgroundSupervisor.launch_interactive_runtime, bootstrap
         )
         path = bootstrap / "endpoint"
-        async with asyncio.timeout(20):
-            while not path.is_file():
-                if process.poll() is not None:
-                    failure = read_json_object(bootstrap / "failure") or {}
-                    message = str(
-                        failure.get("message", "Unable to start the hosted session runtime")
-                    )
-                    if process.returncode == 3:
-                        print(message, file=sys.stderr)
-                        raise SystemExit(3)
-                    if failure.get("code") == "local_controller_unavailable":
-                        raise LocalControllerUnavailable(message)
-                    raise ControllerProtocolError(message)
-                await asyncio.sleep(0.01)
+        try:
+            async with asyncio.timeout(hosted_transport.LAUNCH_TIMEOUT_S):
+                while not path.is_file():
+                    if process.poll() is not None:
+                        failure = read_json_object(bootstrap / "failure") or {}
+                        message = str(
+                            failure.get("message", "Unable to start the hosted session runtime")
+                        )
+                        if process.returncode == 3:
+                            print(message, file=sys.stderr)
+                            raise SystemExit(3)
+                        if failure.get("code") == "local_controller_unavailable":
+                            raise LocalControllerUnavailable(message)
+                        raise ControllerProtocolError(message)
+                    await asyncio.sleep(0.01)
+        except TimeoutError as exc:
+            # Leaving it running would strand a runtime that holds the session's lease.
+            process.kill()
+            await asyncio.to_thread(process.wait)
+            raise HostedStartupError(
+                "The session runtime did not publish its controller within "
+                f"{hosted_transport.LAUNCH_TIMEOUT_S:g} s and was stopped."
+            ) from exc
         return await _run_controller(ControllerEndpoint.load(path), generation=None)
 
 

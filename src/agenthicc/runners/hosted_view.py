@@ -20,6 +20,7 @@ from agenthicc.background.store import InvalidSessionTransition
 from agenthicc.background.supervisor import LiveControllerInputPending, QueueFullError
 from agenthicc.tui.cbreak_reader import Key
 
+from . import hosted_transport
 from .hosted_transport import (
     LOOPBACK,
     MAX_FRAME_BYTES,
@@ -188,12 +189,18 @@ class HostedView(io.TextIOBase):
         endpoint = ControllerEndpoint(server.sockets[0].getsockname()[1], self._secret)
         endpoint.publish(session_endpoint)
         endpoint.publish(bootstrap_endpoint)
-        self._initial_timeout = asyncio.get_running_loop().call_later(20, self._closed.set)
 
     async def run(self, session: TUISession) -> None:
         self._session = session
         session._input_session.hosted_input_ready()
         self._ready.set()
+        if self._initial_pending:
+            # The window for the first controller opens when the session can serve one. It
+            # used to open when the endpoint was published, so a session that took 20 s to
+            # build (a large journal, a loaded host) was closed before anyone could attach.
+            self._initial_timeout = asyncio.get_running_loop().call_later(
+                hosted_transport.INITIAL_CONTROLLER_WINDOW_S, self._closed.set
+            )
         await self._closed.wait()
 
     async def finish(self, switch: SessionSwitch | None) -> None:
@@ -272,7 +279,7 @@ class HostedView(io.TextIOBase):
             await authenticate_controller(stream, self._secret)
             async with asyncio.timeout(20):
                 hello = await stream.receive()
-                await self._ready.wait()
+            await self._wait_until_ready(stream, keepalive=hello.get("type") in ("open", "attach"))
             if hello.get("type") == "status":
                 await stream.send(self._status())
                 return
@@ -294,6 +301,24 @@ class HostedView(io.TextIOBase):
             if view is not None:
                 await self._drop_view(view)
             await stream.close()
+
+    async def _wait_until_ready(self, stream: ControllerStream, *, keepalive: bool) -> None:
+        """Hold a connected controller until the session is built, however long that takes.
+
+        A controller that is opening or attaching hears ``starting`` while it waits, so it can
+        tell a busy runtime from a dead one. A status query is answered by the caller within its
+        own short deadline and is sent nothing.
+        """
+        while not self._ready.is_set():
+            if self._closed.is_set():
+                raise ControllerProtocolError("The session runtime is closing")
+            try:
+                await asyncio.wait_for(
+                    self._ready.wait(), timeout=hosted_transport.STARTING_INTERVAL_S
+                )
+            except TimeoutError:
+                if keepalive:
+                    await stream.send({"type": "starting"})
 
     def _status(self) -> dict[str, object]:
         from agenthicc.subagents.communication import registry_for_session

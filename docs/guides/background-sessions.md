@@ -131,8 +131,9 @@ The checkpoint handoff follows these steps.
    cancelled, failed or interrupted: the work continues in the background), and
    the TUI signals its input loop to exit. During
    TUI shutdown, it awaits the foreground agent task while closing its other
-   resources; after cleanup, control returns to the shell. The background
-   worker is independent of that terminal shutdown.
+   resources; after cleanup, the agents hub opens with the new agent selected
+   (where no hub can open, such as a pipe, control returns to the shell). The
+   background worker is independent of that terminal shutdown.
 
 If the process that owned a session is killed abruptly, its lifecycle record
 may still say `running` after `agenthicc --continue` has safely reclaimed the
@@ -714,8 +715,25 @@ open through the saved-session resume path.
 Inside a session the hub asks first — `Switch to … ? This session reopens when
 you leave it.` — then closes the current session, opens the chosen agent or
 saved session, and reopens the original session when that one ends. Switching
-waits for a running turn to finish or be stopped. After a hosted session detaches, the terminal returns to the shell.
-The session is available in the hub.
+is refused, with the reason in the status line, while the session is doing work
+that closing it would cancel: a running turn, a running workflow (including
+between its phases), queued messages, an open approval, or subagents that are
+still working or whose notices the parent has not read. A paused workflow does
+not block a switch. If the chosen agent cannot open, the original session
+reopens and the failure is printed.
+
+After a hosted session detaches (`/bg`, `/background`, `/detach`), the agents
+hub opens with that session selected, the same as for a terminal-owned session.
+Where no hub can open, the terminal returns to the shell and the session is
+available in the hub later. Pressing Enter in a hub opened by `agenthicc agents`
+or `agenthicc attach` and then using `/bg` returns to that hub.
+
+Attaching a hosted session starts a runtime process that must build the session
+before it can serve a terminal. The wait is bounded by silence, not by how long
+the build takes: the runtime reports `starting` every two seconds, and a runtime
+that sends nothing for 30 seconds, stops, or does not publish its controller
+within 60 seconds is reported by name and stopped. It is not a bare
+`TimeoutError`.
 
 Delete is asynchronous and recoverable. `Ctrl+X` immediately captures the
 selected or marked agents and starts one durable operation; no confirmation is
@@ -1082,6 +1100,8 @@ Its subcommands are `list`, `status`, `cancel`, `resume`, `retry`, `priority`,
 | A cancelled agent cannot be found | Cancelled work may have moved to the trash | `agenthicc agents list --trash` lists recoverable agents; `agents restore` brings one back |
 | The History tab is cluttered with old entries | They have not been archived or purged | `A` (or `agents archive SESSION_ID`) archives one; `agents purge` removes expired trash deliberately |
 | `agenthicc jobs` is not a command | It moved under `agenthicc agents` (AGX-05) | Use `agenthicc agents <subcommand>`; `agenthicc agents` alone opens the hub |
+| Enter in the hub says `Unable to open foreground session … HostedStartupError` | The session runtime did not start, answer, or stay alive while it built the session | The message names which; run `agenthicc attach SESSION_ID` again. A busy machine and a very large session slow the build but no longer fail it while the runtime reports `starting` |
+| A switch from inside a session is refused | The session still has work closing it would cancel | The status line names it (turn, workflow, queued messages, approval, subagents); wait, pause the workflow, or stop it, then switch |
 | `/bg` is missing from the command picker | It is injected outside `BUILTIN_COMMANDS` | `/background` and `/bg` come from the background integration; check that the integration loaded |
 | A background job wrote to an unexpected place | `cwd` was relative at submit time | Pass an explicit working directory to `run --background`; inspect `artifact_dir` in the job record |
 | An agent shows `attempt: 2` unexpectedly | It was retried | Compare with `agents status --json`; a retry after a cancellation may be intentional, so confirm before assuming a crash |
