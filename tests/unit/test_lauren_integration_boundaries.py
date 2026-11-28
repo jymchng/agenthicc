@@ -15,6 +15,8 @@ from lauren_ai._tools._schema import generate_tool_schema
 from lauren_ai._transport import Completion, Message, RequestOptions, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
+from agenthicc.background.session_messages import SessionMessenger
+from agenthicc.background.store import BackgroundStore
 from agenthicc.subagents.tool import SubagentToolSelection
 from agenthicc.tools.surface import ToolSurface
 from agenthicc.testing.recording_transport import RecordingTransport
@@ -43,13 +45,21 @@ def test_batch_filesystem_inputs_generate_structured_schemas(caplog):
         assert item_schema["items"]["type"] == "object"
 
 
-def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch):
+def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch, tmp_path):
     """The actual session registry generates no unrecognised-type warnings."""
     monkeypatch.setenv("MSGRAPH_TOKEN", "token")  # offer the Outlook group too
+    # A session with messaging on (the default) offers list_sessions and message_session.
+    messenger = SessionMessenger(
+        BackgroundStore(tmp_path / "background"), "me", project_root=tmp_path
+    )
     with caplog.at_level(logging.WARNING, logger="lauren_ai._tools._schema"):
         session_tools = build_session_tools(
             SimpleNamespace(
-                approval_svc=None, memory_router=None, semantic_index=None, browser_tools=()
+                approval_svc=None,
+                memory_router=None,
+                semantic_index=None,
+                browser_tools=(),
+                session_messenger=messenger,
             )
         )
         session_tools.append(
@@ -65,8 +75,10 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog, monkeypatch
     assert not [
         record for record in caplog.records if "unrecognised type annotation" in record.message
     ]
-    assert len(schemas) == 63
+    assert len(schemas) == 65
     assert schemas["reload_tools"]["input_schema"]["properties"] == {}
+    assert schemas["list_sessions"]["input_schema"]["properties"] == {}
+    assert schemas["message_session"]["input_schema"]["required"] == ["session_id", "message"]
     assert (
         schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
     )
