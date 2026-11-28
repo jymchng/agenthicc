@@ -3890,11 +3890,9 @@ class TUISession:
         if result.session_id is None or result.action not in ("attach", "open_saved"):
             overlays.hide()
             return
-        task = self._agent_task
-        if task is not None and not task.done():
-            self._ctx.app_state.conversation.notify_transient(
-                "Finish or stop the current turn before switching to another agent"
-            )
+        blocker = self._switch_blocker()
+        if blocker is not None:
+            self._ctx.app_state.conversation.notify_transient(blocker)
             return
         self._switch = SessionSwitch(
             "attach" if result.action == "attach" else "open_saved",
@@ -3904,6 +3902,34 @@ class TUISession:
         )
         overlays.hide()
         self._input_session.request_exit()
+
+    def _switch_blocker(self) -> str | None:
+        """Why this session cannot be closed for a switch right now, or ``None``.
+
+        Closing the session cancels everything it owns, so a switch is allowed only when the
+        session is settled. ``_agent_task`` alone does not say so: it is empty between a
+        workflow's phases, while a parent that has yielded waits on its subagents, and while
+        a message is queued or an approval is open. Closing then still cancelled the workflow
+        (it came back paused with the agent Idle) and every worker. A paused workflow runs
+        nothing, so it does not block. :meth:`HostedBackground._settled` asks the same
+        question before it closes a detached runtime.
+        """
+        task = self._agent_task
+        if task is not None and not task.done():
+            return "Finish or stop the current turn before switching to another agent"
+        handle = self._workflow_handle
+        if handle is not None and handle.lifecycle in {"running", "pausing", "resuming"}:
+            return "Pause or stop the running workflow before switching to another agent"
+        if len(self._msg_queue) > 0:
+            return "Wait for the queued messages to be sent before switching to another agent"
+        if self._ctx.app_state.pending_approval() is not None:
+            return "Answer the open approval before switching to another agent"
+        source = self._subagent_notices
+        if source is not None and (
+            source.has_pending() or any(not item.task.done() for item in source.registry.handles())
+        ):
+            return "Wait for the subagents to finish before switching to another agent"
+        return None
 
     @property
     def switch(self) -> SessionSwitch | None:
@@ -7410,7 +7436,16 @@ async def _run_tui_session(
                 switch = await run_target(result.action, result.session_id)
         else:
             returns.append((switch.origin, switch.origin_cwd))
-            switch = await run_target(switch.action, switch.target)
+            target = switch.target
+            try:
+                switch = await run_target(switch.action, target)
+            except Exception as exc:  # noqa: BLE001 - the origin session must come back
+                # The hub promised "This session reopens when you leave it". A target that
+                # cannot open (a hosted runtime that did not start, say) used to end the whole
+                # process with a traceback instead.
+                reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                print(f"Unable to open session {target}: {reason}", file=sys.stderr)
+                switch = None
 
 
 async def _switch_target_directory(

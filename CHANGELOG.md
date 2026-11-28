@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — agents hub attach and `/bg`
+
+- **Switching agents no longer cancels the work of the session you leave.** Enter on a
+  hub row inside a session closed it whenever no turn was streaming, so a workflow
+  between phases came back paused with the agent Idle (`Product discovery 1/11 paused`),
+  and a parent waiting on subagents cancelled all of them. The switch is now refused,
+  with the reason, while a turn or a running workflow is active, messages are queued, an
+  approval is open, or subagents are working or unread. A paused workflow does not block.
+- **`Unable to open foreground session …: TimeoutError` is gone for a slow start.** The
+  hosted runtime's three 20 s deadlines all started when it published its endpoint, so
+  the session's own build used them up (an empty session takes about 8 s on an idle
+  host). The first-controller window now opens when the session is ready, the controller
+  waits on silence (the runtime reports `starting` every 2 s; 30 s of silence is a
+  failure), the handshake allows 15 s, and a runtime that never publishes is stopped.
+  Failures are `HostedStartupError` with a cause, never a bare `TimeoutError`, and a
+  switch whose target cannot open reopens the original session instead of ending the
+  process.
+- **Background terminals work in a hosted session.** `run_bash` with `background`,
+  `wait_terminal` and Ctrl+B answered `background terminals are unavailable in this
+  execution context` for an agent opened from the agents hub or attached with `agenthicc
+  attach` (the agent then fell back to synchronous runs). The runtime started its
+  controller server before it built the session, so the controller's connection
+  handlers, and every turn they started, ran in a context with no terminal manager. They
+  now run in the session's context.
+- **`/bg` opens the agents hub** with the new agent selected after a hosted session
+  detaches, as it already did for a terminal-owned session, instead of returning to the
+  shell. `agenthicc attach` followed by `/bg` returns to the hub.
+
+### Changed — MCP works out of the box, or says exactly why not (MCP-01)
+
+- **Breaking.** `lauren-mcp[http,ws]` is now a base dependency and the `mcp` extra is
+  removed (`pip install 'agenthicc[mcp]'` no longer exists). The `lauren-ai[mcp]` pin it
+  carried is gone with it; nothing in agenthicc imports it.
+- A missing, broken or too-old MCP client is no longer a bare "unavailable". The
+  transcript notice names the cause and, in its body, the command that installs the
+  client into the interpreter running agenthicc. It is written once per startup, not
+  once per server.
+- `agenthicc mcp doctor` checks the client first and exits non-zero when it is unusable;
+  `mcp list --json` and `/mcp status` carry `client_available`, `reason` and `fix`; the
+  status line shows `mcp ✗` while an enabled server is `failed` or `needs_auth`.
+- The bridge calls the real client's signatures: `call_tool(name, arguments)` takes no
+  call id, and the stdio launch passes `cwd` and `env` without a `TypeError` fallback
+  that could start the child with the parent's whole environment.
+- CI now imports the real client, and `agenthicc.tools.mcp` is type-checked against
+  its types (the mypy `ignore_missing_imports` override is removed).
+- `tui.first_prompt.modules` budget raised from 377 to 400: `main` already measured 380
+  with the same environment, so this change does not move it.
+
 ### Added — agents message across pools and sessions (COMM-04, COMM-05)
 
 - A subagent can message a worker of a related pool (a sibling, an ancestor or a

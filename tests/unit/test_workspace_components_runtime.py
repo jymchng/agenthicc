@@ -163,6 +163,34 @@ def test_status_projects_nested_workflow_phase_and_staged_set_count(glyph_set: s
     )
 
 
+def test_the_status_line_shows_an_mcp_badge_while_a_server_needs_attention() -> None:
+    """MCP-01 D3: ``mcp ✗`` shows while an enabled server is failed, and only then."""
+    from agenthicc.tui.rendering import visible_len
+
+    state = _real()
+    line = components.StatusLine(state)
+    assert "mcp" not in _plain(line.markup(160))
+
+    state.conversation.mcp_attention.set(1)
+    assert "mcp ✗" in _plain(line.markup(160))
+    # An alert is not a low-priority segment: it survives a narrow terminal.
+    narrow = line.markup(60)
+    assert visible_len(narrow) <= 60
+    assert "✗" in _plain(narrow)
+    assert "an MCP server needs attention" in line_reader_text(state)
+
+    state.conversation.mcp_attention.set(0)
+    assert "mcp" not in _plain(line.markup(160))
+
+
+def line_reader_text(state: AppState) -> str:
+    """The segment as a screen reader hears it."""
+    parts = components._static_parts(components.StatusLine(state)._inputs(reader=True))
+    return " ".join(
+        _plain(form.markup) for part in parts for form in part.forms[:1] if "MCP" in form.markup
+    )
+
+
 def test_status_preserves_priority_and_fits_display_cells() -> None:
     from agenthicc.subagents.pool import SubagentPoolState, WorkerState
     from agenthicc.tui.rendering import visible_len

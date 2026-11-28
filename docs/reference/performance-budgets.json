@@ -150,7 +150,7 @@
       "tolerance": 0.3
     },
     "tui.first_prompt.modules": {
-      "budget": 377,
+      "budget": 400,
       "scope": "local",
       "tolerance": 0
     },

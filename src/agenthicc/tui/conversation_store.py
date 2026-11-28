@@ -321,6 +321,11 @@ class ConversationStore:
         self.git_branch: Signal[str] = Signal("", name="git_branch")
         """The working directory's branch, ``""`` outside a repository."""
         self.git_dirty: Signal[bool] = Signal(False, name="git_dirty")
+        self.mcp_attention: Signal[int] = Signal(0, name="mcp_attention")
+        """How many enabled MCP servers are ``failed`` or ``needs_auth`` (MCP-01).
+
+        The status line shows an ``mcp ✗`` badge while it is above zero. The MCP session
+        manager owns the count and is the only writer."""
         self.statusline_text: Signal[str] = Signal("", name="statusline_text")
         """The user status-line command's last good output (one sanitized line)."""
         self.notification: Signal[str | None] = Signal(None, name="notification")

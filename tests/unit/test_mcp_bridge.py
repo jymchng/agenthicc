@@ -13,6 +13,7 @@ from agenthicc.tools.mcp import (
     McpToolRegistry,
     McpToolCallError,
 )
+from agenthicc.tools.mcp_availability import McpClientStatus, McpUnavailable
 from agenthicc.tools.mcp_server_config import McpServerConfig, McpConfigurationError
 
 pytestmark = pytest.mark.unit
@@ -134,26 +135,16 @@ def test_tool_parameters_are_provider_safe():
 
 
 @pytest.mark.asyncio
-async def test_tool_execute_passes_tool_call_id():
+async def test_tool_execute_forwards_only_the_arguments_to_the_bridge():
+    """The MCP client's ``call_tool`` takes no call id, so none is passed (MCP-01)."""
     bridge = MagicMock()
     bridge.server_name = "s"
     bridge.call_tool = AsyncMock(return_value="result")
     schema = McpToolSchema(name="t", description="", input_schema={})
     tool = AgenthiccMcpTool(bridge, schema)
     result = await tool.execute({"x": 1}, {"tool_call_id": "abc123"})
-    bridge.call_tool.assert_called_once_with("t", {"x": 1}, tool_call_id="abc123")
+    bridge.call_tool.assert_called_once_with("t", {"x": 1})
     assert result == "result"
-
-
-@pytest.mark.asyncio
-async def test_tool_execute_uses_empty_tool_call_id_when_missing():
-    bridge = MagicMock()
-    bridge.server_name = "s"
-    bridge.call_tool = AsyncMock(return_value="ok")
-    schema = McpToolSchema(name="t", description="", input_schema={})
-    tool = AgenthiccMcpTool(bridge, schema)
-    await tool.execute({}, {})
-    bridge.call_tool.assert_called_once_with("t", {}, tool_call_id="")
 
 
 # ── McpToolBridge ─────────────────────────────────────────────────────────────
@@ -186,9 +177,33 @@ async def test_connect_idempotent():
 async def test_connect_raises_when_lauren_mcp_unavailable():
     cfg = McpServerConfig(name="s", url="u", transport="stdio", reconnect_attempts=0)
     bridge = McpToolBridge(cfg)
-    with patch("agenthicc.tools.mcp._LAUREN_MCP_AVAILABLE", False):
-        with pytest.raises(ImportError, match="lauren_mcp"):
+    missing = McpClientStatus(False, "dependency_missing", fix="python -m pip install x")
+    with patch("agenthicc.tools.mcp.client_status", return_value=missing):
+        with pytest.raises(McpUnavailable) as raised:
             await bridge.connect()
+    assert raised.value.status.reason == "dependency_missing"
+    assert "lauren-mcp is not installed" in str(raised.value)
+    assert "python -m pip install x" in str(raised.value)
+    assert not bridge.is_connected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["dependency_missing", "dependency_incompatible"])
+async def test_an_unusable_client_is_not_retried_or_built(reason: str):
+    """The check runs before the retry loop: retrying a missing library cannot help."""
+    cfg = McpServerConfig(
+        name="s", url="u", transport="stdio", reconnect_attempts=3, reconnect_delay_seconds=0.0
+    )
+    bridge = McpToolBridge(cfg)
+    unusable = McpClientStatus(False, reason, installed="1.1.0", fix="fix it")
+    build = AsyncMock()
+    with (
+        patch("agenthicc.tools.mcp.client_status", return_value=unusable),
+        patch.object(bridge, "_build_client", build),
+    ):
+        with pytest.raises(McpUnavailable):
+            await bridge.connect()
+    build.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -279,7 +294,7 @@ async def test_call_tool_returns_content_on_success():
     ok_result = {"isError": False, "content": [{"type": "text", "text": "output"}]}
     bridge._client = AsyncMock()
     bridge._client.call_tool = AsyncMock(return_value=ok_result)
-    result = await bridge.call_tool("t", {"arg": "val"}, tool_call_id="id1")
+    result = await bridge.call_tool("t", {"arg": "val"})
     assert result == {"ok": True, "content": "output"}
 
 
@@ -671,7 +686,7 @@ async def test_a_wrapped_schema_unwraps_arguments_on_call():
     assert tool.parameters["required"] == ["value"]
     await tool.execute({"value": "hello"}, {})
 
-    bridge.call_tool.assert_awaited_once_with("echo", "hello", tool_call_id="")
+    bridge.call_tool.assert_awaited_once_with("echo", "hello")
 
 
 async def test_a_dead_server_reconnects_once_and_a_failing_one_opens_the_circuit():

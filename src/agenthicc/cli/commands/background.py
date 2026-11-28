@@ -165,9 +165,13 @@ async def _open_hub(
     *,
     tab: str = "",
     session_id: str = "",
+    select: str = "",
     run_id: str = "",
 ) -> None:
-    """Open the agents hub full screen, then follow an attach or a saved session."""
+    """Open the agents hub full screen, then follow an attach or a saved session.
+
+    *session_id* opens that agent's detail; *select* only highlights it in the list.
+    """
     from rich.console import Console
 
     from agenthicc.tui.workspace.agents_hub import DispatchDefaults, Tab, run_agents_hub
@@ -187,6 +191,7 @@ async def _open_hub(
         sources=HubSources.default(Path.cwd()),
         tab=Tab(tab) if tab else Tab.RUNNING,
         open_session=session_id or None,
+        select=select or None,
         run_id=run_id,
         dispatch=DispatchDefaults(
             config_path=ctx.config_path,
@@ -258,7 +263,10 @@ async def attach_background_session(
             else:
                 from agenthicc.runners.hosted_session import attach_hosted_terminal
 
-                await attach_hosted_terminal(record)
+                switch = await attach_hosted_terminal(record)
+                if switch is not None and switch.action == "hub":
+                    # ``/bg`` in the attached terminal: back to the hub, as on first launch.
+                    await _open_hub(ctx, select=switch.target)
             return True
         foreground = supervisor.attach_foreground(session_id)
     except (KeyError, OSError, RuntimeError, ValueError) as exc:
@@ -302,8 +310,12 @@ async def attach_background_session(
             mode_name=ctx.mode_name,
         )
     except Exception as exc:  # noqa: BLE001
-        Console(highlight=False).print(
-            f"Unable to open foreground session {session_id}: {type(exc).__name__}: {exc}"
+        # An exception with no text (a bare TimeoutError) used to print as "TimeoutError: ".
+        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        Console(highlight=False, markup=False).print(
+            f"Unable to open foreground session {session_id}: {reason}. "
+            f"Run `agenthicc attach {session_id}` to try again.",
+            soft_wrap=True,
         )
         if fail_on_error:
             raise SystemExit(1) from exc

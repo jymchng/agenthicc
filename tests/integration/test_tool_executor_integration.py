@@ -68,7 +68,7 @@ async def test_builtin_and_plugin_tools_share_lauren_execution_contract(tmp_path
     assert folders.ok is True and folders.value == {"folders": [{"name": "Inbox"}], "count": 1}
     assert mcp.ok is True and mcp.value == {"content": "pong"}
     assert plugin.ok is True and plugin.value == {"value": "ok"}
-    bridge.call_tool.assert_awaited_once_with("ping", {}, tool_call_id="mcp-1")
+    bridge.call_tool.assert_awaited_once_with("ping", {})
 
     sources = {record["source"] for record in executor.catalog()}
     assert sources == {"builtin", "git", "exec", "outlook", "mcp", "plugin"}

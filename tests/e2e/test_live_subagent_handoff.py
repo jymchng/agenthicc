@@ -26,6 +26,31 @@ from tests.e2e.self_extension.harness import ModelRequest, reply, tool_call
 from tests.e2e.test_first_run_e2e import _Terminal, _repository
 from tests.subagent_sessions import ScenarioTransport, spawn_call
 
+
+def _wait_for_detach(terminal: _Terminal) -> str:
+    """The detach acknowledgement as it was on screen the moment it appeared.
+
+    ``/bg`` now ends in the agents hub, which repaints the whole screen, so the lines the
+    client printed are read when they show rather than after the hub has drawn over them.
+    """
+    seen: list[str] = []
+
+    def acknowledged(text: str) -> bool:
+        if "running in the background" in text:
+            seen.append(text)
+            return True
+        return False
+
+    terminal.wait_for(acknowledged, "handoff confirmation")
+    return seen[0]
+
+
+def _leave_the_hub(terminal: _Terminal) -> None:
+    """``/bg`` opens the agents hub with the new agent selected; Esc leaves it."""
+    terminal.wait_for(lambda text: "Needs you" in text, "the agents hub after the handoff")
+    terminal.send("\x1b")
+
+
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY test fixture"),
@@ -428,9 +453,10 @@ def test_goal_flow_detach_preserves_five_live_executor_attempts(
         before = requests()
         sent_at = time.monotonic()
         terminal.send(f"{alias}\r")
-        terminal.wait_for(lambda text: "running in the background" in text, "handoff confirmation")
-        assert terminal.text().count("is running in the background.") == 1
-        deadline = sent_at + min(CLI_PROCESS_TIMEOUT_S / 2, 10)
+        acknowledgement = _wait_for_detach(terminal)
+        assert acknowledgement.count("is running in the background.") == 1
+        _leave_the_hub(terminal)
+        deadline = sent_at + min(CLI_PROCESS_TIMEOUT_S / 2, 10) + 5
         while time.monotonic() < deadline:
             exit_status = terminal.poll()
             if exit_status is not None:
@@ -695,12 +721,12 @@ def test_direct_session_explorers_keep_running_through_background_handoff(
         assert attached.session_dir == journal.parent
 
         terminal.send(f"{alias}\r")
-        terminal.wait_for(lambda text: "running in the background" in text, "handoff confirmation")
+        screen = _wait_for_detach(terminal)
+        _leave_the_hub(terminal)
         deadline = time.monotonic() + CLI_PROCESS_TIMEOUT_S / 2
         while terminal.poll() is None and time.monotonic() < deadline:
             terminal.pump(0.03)
         assert terminal.poll() == 0, "the terminal client should have exited"
-        screen = terminal.text()
         assert "parent_cancelled" not in screen and "cancelled" not in screen.lower()
         assert "5 live workers across 1 pools" in screen
 
