@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import queue
 import secrets
@@ -111,6 +112,7 @@ class HostedView(io.TextIOBase):
         self._background: HostedBackground | None = None
         self._cutover: asyncio.Task[None] | None = None
         self._session: TUISession | None = None
+        self._context: contextvars.Context | None = None
         self._ready = asyncio.Event()
         self._closed = asyncio.Event()
         self._finished = asyncio.Event()
@@ -192,6 +194,8 @@ class HostedView(io.TextIOBase):
 
     async def run(self, session: TUISession) -> None:
         self._session = session
+        # The context this session runs in, with its terminal manager and other bindings.
+        self._context = contextvars.copy_context()
         session._input_session.hosted_input_ready()
         self._ready.set()
         if self._initial_pending:
@@ -273,13 +277,36 @@ class HostedView(io.TextIOBase):
             await self._active.stream.close()
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Authenticate a controller and wait for the session, then serve it in the session's context."""
         stream = ControllerStream(reader, writer)
+        try:
+            try:
+                await authenticate_controller(stream, self._secret)
+                async with asyncio.timeout(20):
+                    hello = await stream.receive()
+                await self._wait_until_ready(
+                    stream, keepalive=hello.get("type") in ("open", "attach")
+                )
+            except (TimeoutError, ConnectionError, asyncio.IncompleteReadError):
+                return
+            except (ControllerProtocolError, InvalidSessionTransition) as exc:
+                await stream.send({"type": "error", "message": str(exc)})
+                return
+            # asyncio runs this handler in the context the controller server was started in,
+            # which is before the session exists: the session's terminal manager is bound to
+            # a context variable after. A turn started from here (a controller's keys, a
+            # detach, the background control loop) would see no manager, and ``run_bash`` with
+            # ``background`` would answer "background terminals are unavailable in this
+            # execution context". The controller is served in the session's context instead.
+            context = self._context
+            assert context is not None  # ready is set only by run(), after it captures this
+            await asyncio.create_task(self._serve_controller(stream, hello), context=context.copy())
+        finally:
+            await stream.close()
+
+    async def _serve_controller(self, stream: ControllerStream, hello: dict[str, object]) -> None:
         view: _View | None = None
         try:
-            await authenticate_controller(stream, self._secret)
-            async with asyncio.timeout(20):
-                hello = await stream.receive()
-            await self._wait_until_ready(stream, keepalive=hello.get("type") in ("open", "attach"))
             if hello.get("type") == "status":
                 await stream.send(self._status())
                 return

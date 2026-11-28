@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Failures are `HostedStartupError` with a cause, never a bare `TimeoutError`, and a
   switch whose target cannot open reopens the original session instead of ending the
   process.
+- **Background terminals work in a hosted session.** `run_bash` with `background`,
+  `wait_terminal` and Ctrl+B answered `background terminals are unavailable in this
+  execution context` for an agent opened from the agents hub or attached with `agenthicc
+  attach` (the agent then fell back to synchronous runs). The runtime started its
+  controller server before it built the session, so the controller's connection
+  handlers, and every turn they started, ran in a context with no terminal manager. They
+  now run in the session's context.
 - **`/bg` opens the agents hub** with the new agent selected after a hosted session
   detaches, as it already did for a terminal-owned session, instead of returning to the
   shell. `agenthicc attach` followed by `/bg` returns to the hub.
