@@ -166,6 +166,16 @@ def ensure_phase_is_active(profile: object, next_state: UiUxProMaxState) -> UiUx
     return next_state
 
 
+def is_accessibility_audit(profile: object) -> bool:
+    """Return whether ``profile`` selects the accessibility-audit route.
+
+    Normalises first, so no caller ever compares a raw or aliased value against a
+    route name. Used both for routing decisions and for phase-context flags such
+    as ``accessibility_audit_only``.
+    """
+    return normalise_route_profile(profile)[0] == "accessibility_audit"
+
+
 def next_state_after_product_discovery(context: UiUxProMaxContext) -> UiUxProMaxState:
     """Return the phase product_discovery hands off to for this run's profile.
 
@@ -1252,7 +1262,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
                 "acceptance_criteria": context.acceptance_criteria,
                 "prior_findings": context.audit_findings,
                 "remediation_cycle": context.remediation_cycles,
-                "accessibility_audit_only": context.route_profile == "accessibility_audit",
+                "accessibility_audit_only": is_accessibility_audit(context.route_profile),
             },
             "design_remediation": {
                 "audit_summary": context.audit_summary,

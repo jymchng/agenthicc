@@ -38,6 +38,7 @@ from agenthicc.workflows.ui_ux_pro_max.runner import (
     UiUxProMaxRunner,
     active_phases_for,
     ensure_phase_is_active,
+    is_accessibility_audit,
     next_state_after_design_research,
     next_state_after_product_discovery,
     next_state_after_stack_adaptation,
@@ -1395,3 +1396,85 @@ def test_phase_tools_are_individually_workflow_control_tools() -> None:
         tools = factory(asyncio.Event(), {})
         assert tools
         assert all(ToolCapability.CONTROL in get_tool_capabilities(tool) for tool in tools)
+
+
+UIUX_PACKAGE = (
+    Path(__file__).resolve().parents[2] / "src" / "agenthicc" / "workflows" / "ui_ux_pro_max"
+)
+
+
+def _raw_profile_comparisons(source: str) -> list[str]:
+    """Return every ``<something>.route_profile ==/!= "<literal>"`` in ``source``.
+
+    Only a *bare* profile reference counts: an ``ast.Attribute`` named
+    ``route_profile`` (``context.route_profile``) or a matching ``ast.Name``.
+    That deliberately excludes ``normalise_route_profile(x)[0] == "broad"``,
+    which is the supported way to ask the question, and leaves the alias and
+    topology tables in ``state.py`` untouched.
+    """
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            continue
+        operands = [node.left, *node.comparators]
+        literals = [item for item in operands if isinstance(item, ast.Constant)]
+        if not any(isinstance(item.value, str) for item in literals):
+            continue
+        for item in operands:
+            bare_profile = (isinstance(item, ast.Attribute) and item.attr == "route_profile") or (
+                isinstance(item, ast.Name) and item.id == "route_profile"
+            )
+            if bare_profile:
+                found.append(ast.unparse(node))
+    return found
+
+
+def test_no_raw_route_profile_comparison_remains_in_the_workflow_package() -> None:
+    """The alias table is the only place a spelling becomes a canonical profile.
+
+    Comparing a raw ``route_profile`` against a literal is exactly the bug that
+    crashed the run: the transition said "not broad" while the phase tuple fell
+    back to broad. Every decision must go through ``normalise_route_profile`` or
+    ``active_phases_for`` instead, so this fails if one is reintroduced.
+    """
+    offenders: list[str] = []
+    for path in sorted(UIUX_PACKAGE.glob("*.py")):
+        offenders.extend(
+            f"{path.name}: {expr}" for expr in _raw_profile_comparisons(path.read_text())
+        )
+
+    assert offenders == [], offenders
+
+
+def test_the_raw_comparison_guard_catches_a_reintroduced_comparison() -> None:
+    """The guard above is only useful if it actually detects the bad shape."""
+    assert _raw_profile_comparisons('x = context.route_profile == "accessibility_audit"') == [
+        "context.route_profile == 'accessibility_audit'"
+    ]
+    assert _raw_profile_comparisons('x = context.route_profile != "broad"')
+    # The supported spellings must not trip it.
+    assert _raw_profile_comparisons('x = normalise_route_profile(p)[0] == "broad"') == []
+    assert _raw_profile_comparisons('x = "broad" in PHASES_BY_PROFILE') == []
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("accessibility_audit", True),
+        ("accessibility", True),
+        ("a11y", True),
+        ("Accessibility-Audit", True),
+        ("  accessibility_audit  ", True),
+        ("broad", False),
+        ("targeted", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_accessibility_audit_normalises_before_comparing(
+    profile: object, expected: bool
+) -> None:
+    """Aliases and unusable values resolve to the canonical answer, not a raw miss."""
+    assert is_accessibility_audit(profile) is expected
