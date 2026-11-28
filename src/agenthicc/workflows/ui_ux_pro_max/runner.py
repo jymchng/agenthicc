@@ -23,13 +23,16 @@ from agenthicc.workflows.phase_lifecycle import (
 )
 from agenthicc.workflows.plugin import WorkflowRun, phase_transition_instruction
 from agenthicc.workflows.ui_ux_pro_max.state import (
+    DEFAULT_ROUTE_PROFILE,
     MAX_RESUME_HISTORY,
     PHASES_BY_PROFILE,
     PhaseArtifact,
+    PhaseTopologyError,
     UiUxProMaxContext,
     UiUxProMaxState,
     bounded_list,
     bounded_text,
+    normalise_route_profile,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +61,172 @@ PHASE_NAMES: tuple[str, ...] = (
 )
 PHASE_INDEX = {name: index for index, name in enumerate(PHASE_NAMES)}
 _MAX_PHASE_TRANSITION_ATTEMPTS = 3
+
+# Profile -> the research phase that follows product_discovery.  Keyed by the
+# *canonical* profile returned by normalise_route_profile, so no branch anywhere
+# compares a raw tool payload against a profile string.  A profile missing from
+# the table (only possible if the tables drift) falls back to broad.
+_RESEARCH_STATE_BY_PROFILE: dict[str, UiUxProMaxState] = {
+    "broad": UiUxProMaxState.DESIGN_INTELLIGENCE,
+    "targeted": UiUxProMaxState.TARGETED_DESIGN_RESEARCH,
+    "accessibility_audit": UiUxProMaxState.TARGETED_DESIGN_RESEARCH,
+}
+
+# Profile -> the phase that follows the research phase.  design_system_synthesis
+# and design_system_review exist only on the broad route; the targeted and
+# accessibility routes go straight to stack adaptation.
+_RESEARCH_SUCCESSOR_BY_PROFILE: dict[str, UiUxProMaxState] = {
+    "broad": UiUxProMaxState.DESIGN_SYSTEM_SYNTHESIS,
+    "targeted": UiUxProMaxState.STACK_ADAPTATION,
+    "accessibility_audit": UiUxProMaxState.STACK_ADAPTATION,
+}
+
+
+ROUTE_PROFILE_DETAIL_KEYS: tuple[str, ...] = (
+    "scope",
+    "classification",
+    "route_profile",
+    "profile",
+)
+"""`details` keys consulted, in order, for the product_discovery route profile.
+
+``scope`` is the documented key; the rest are accepted spellings so a model that
+names the field differently still routes correctly instead of silently falling
+back. Do not reorder without updating the tool docstring and phase prompt.
+"""
+
+
+def raw_route_profile_detail(data: dict[str, object]) -> str:
+    """Return the first usable route-profile value in ``data``, or ``""``.
+
+    Kept separate from :func:`route_profile_from_details` so the *raw* value can
+    be recorded as the origin of a fallback without duplicating the key order.
+    """
+    for key in ROUTE_PROFILE_DETAIL_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def route_profile_from_details(data: dict[str, object]) -> tuple[str, bool]:
+    """Return ``(canonical_profile, fallback_used)`` for a product_discovery payload.
+
+    The first non-empty value among :data:`ROUTE_PROFILE_DETAIL_KEYS` wins, so an
+    explicit ``scope`` always beats an alias. A payload with no usable value --
+    including the observed ``{"classification": "broad"}`` shape, which carries
+    no ``scope`` at all -- is normalised like any other input, so an unrecognised
+    word still resolves to the canonical broad route with ``fallback_used=True``.
+    """
+    return normalise_route_profile(raw_route_profile_detail(data) or None)
+
+
+def active_phases_for(profile: object) -> tuple[str, ...]:
+    """Return the phase tuple for ``profile`` after normalising it.
+
+    This is the single place a profile is turned into a topology.  Both the
+    transition decision and the phase list used for indexing call it, so the two
+    can never disagree about which phases exist.
+    """
+    canonical, _ = normalise_route_profile(profile)
+    return PHASES_BY_PROFILE.get(canonical, PHASES_BY_PROFILE[DEFAULT_ROUTE_PROFILE])
+
+
+def phase_index_in(profile: object, phase: str) -> int:
+    """Return the position of ``phase`` in the profile's phase tuple.
+
+    The guarded counterpart of ``phases.index(phase)``: a phase that the active
+    profile does not schedule is a topology mismatch, so it raises
+    :class:`PhaseTopologyError` naming the workflow, phase, profile and the
+    profile's actual phases instead of surfacing as
+    ``ValueError: tuple.index(x): x not in tuple``.
+    """
+    canonical, _ = normalise_route_profile(profile)
+    phases = active_phases_for(canonical)
+    if phase not in phases:
+        raise PhaseTopologyError(WORKFLOW_NAME, phase, canonical, phases)
+    return phases.index(phase)
+
+
+def ensure_phase_is_active(profile: object, next_state: UiUxProMaxState) -> UiUxProMaxState:
+    """Return ``next_state`` or raise :class:`PhaseTopologyError` if unreachable.
+
+    Terminal states are exempt: COMPLETE/BLOCKED/FAILED end the run and are
+    never looked up in a profile tuple.  Everything else must be a member of the
+    profile's phase list, so a routing bug surfaces as a named topology failure
+    rather than an unmatched ``tuple.index``.
+    """
+    if next_state.is_terminal:
+        return next_state
+    canonical, _ = normalise_route_profile(profile)
+    phases = active_phases_for(canonical)
+    phase = next_state.name.lower()
+    if phase not in phases:
+        raise PhaseTopologyError(WORKFLOW_NAME, phase, canonical, phases)
+    return next_state
+
+
+def is_accessibility_audit(profile: object) -> bool:
+    """Return whether ``profile`` selects the accessibility-audit route.
+
+    Normalises first, so no caller ever compares a raw or aliased value against a
+    route name. Used both for routing decisions and for phase-context flags such
+    as ``accessibility_audit_only``.
+    """
+    return normalise_route_profile(profile)[0] == "accessibility_audit"
+
+
+def next_state_after_product_discovery(context: UiUxProMaxContext) -> UiUxProMaxState:
+    """Return the phase product_discovery hands off to for this run's profile.
+
+    Pure: it reads only ``context.route_profile``, so it is unit-testable without
+    ``_run_phase`` or a provider.  An unrecognised or empty profile normalises to
+    broad and therefore routes to design_intelligence -- the silent fallback that
+    used to *skip* that phase now selects it.
+    """
+    canonical, _ = normalise_route_profile(context.route_profile)
+    candidate = _RESEARCH_STATE_BY_PROFILE.get(
+        canonical, _RESEARCH_STATE_BY_PROFILE[DEFAULT_ROUTE_PROFILE]
+    )
+    return ensure_phase_is_active(canonical, candidate)
+
+
+def next_state_after_design_research(context: UiUxProMaxContext) -> UiUxProMaxState:
+    """Return the phase the research stage hands off to for this run's profile."""
+    canonical, _ = normalise_route_profile(context.route_profile)
+    candidate = _RESEARCH_SUCCESSOR_BY_PROFILE.get(
+        canonical, _RESEARCH_SUCCESSOR_BY_PROFILE[DEFAULT_ROUTE_PROFILE]
+    )
+    return ensure_phase_is_active(canonical, candidate)
+
+
+def next_state_after_stack_adaptation(context: UiUxProMaxContext) -> UiUxProMaxState:
+    """Return the phase stack_adaptation hands off to for this run's profile.
+
+    experience_architecture is skipped by profiles that do not schedule it (the
+    accessibility route), so the decision is read off the profile's phase tuple
+    rather than compared against a profile name.
+    """
+    preferred = UiUxProMaxState.EXPERIENCE_ARCHITECTURE
+    if preferred.name.lower() in active_phases_for(context.route_profile):
+        return ensure_phase_is_active(context.route_profile, preferred)
+    return ensure_phase_is_active(context.route_profile, UiUxProMaxState.VISUAL_UX_AUDIT)
+
+
+def next_state_after_visual_ux_audit(
+    context: UiUxProMaxContext, *, remediation_requested: bool
+) -> UiUxProMaxState:
+    """Return the phase visual_ux_audit hands off to for this run's profile.
+
+    Remediation is only reachable when the profile schedules design_remediation
+    *and* the audit asked for another cycle; otherwise the run proceeds to
+    acceptance.  Again the phase tuple, not the profile name, decides.
+    """
+    phases = active_phases_for(context.route_profile)
+    if remediation_requested and "design_remediation" in phases:
+        return ensure_phase_is_active(context.route_profile, UiUxProMaxState.DESIGN_REMEDIATION)
+    return ensure_phase_is_active(context.route_profile, UiUxProMaxState.DESIGN_ACCEPTANCE)
+
 
 CACHE_CONTRACT = """
 [UI_UX_PRO_MAX CACHE CONTRACT]
@@ -97,8 +266,10 @@ PHASE_PROMPTS: dict[str, str] = {
     "product_discovery": (
         "Inspect the repository first: identify product and platform, users, journeys, required "
         "screens/surfaces, existing visual conventions, real framework and constraints. Classify "
-        "the request as broad (new product/substantial redesign), targeted (component change/fix), "
-        "or accessibility_audit (audit only, no implementation). Ask only material questions not "
+        'the request and pass it as details["scope"]: "broad" (new product/substantial redesign), '
+        '"targeted" (component change/fix), or "accessibility_audit" (audit only, no '
+        'implementation). "scope" is the key the runner reads; any other value falls back to '
+        "broad. Ask only material questions not "
         "answerable from project evidence. Produce a structured brief including requirements, "
         "accessibility expectations, assumptions, and concrete acceptance criteria. Call "
         "complete_product_discovery(...)."
@@ -296,6 +467,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             current_phase=None if state.is_terminal else state.name.lower(),
             total_phases=len(phases),
             current_phase_index=self._phase_index(state, phases),
+            diagnostic=context.route_profile_fallback_diagnostic,
         )
         self._cfg.app_state.workflow_run.set(run)
         await self._cfg.processor.emit(
@@ -315,7 +487,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
                 context.state = state
                 phases = self._active_phases(context)
                 phase = state.name.lower()
-                index = phases.index(phase)
+                index = phase_index_in(context.route_profile, phase)
                 run = dataclasses.replace(
                     run,
                     current_phase=phase,
@@ -364,6 +536,9 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
                     current_phase=None if state.is_terminal else state.name.lower(),
                     total_phases=len(phases),
                     current_phase_index=self._phase_index(state, phases),
+                    # A phase may have recorded (or resumed with) a fallback;
+                    # the status view reports it for the rest of the run.
+                    diagnostic=context.route_profile_fallback_diagnostic,
                 )
                 self._cfg.app_state.workflow_run.set(run)
 
@@ -446,7 +621,13 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             self._product_discovery_tools(),
             "complete_product_discovery",
         )
-        context.route_profile = _str(data, "scope")
+        profile, fallback_used = route_profile_from_details(data)
+        context.route_profile = profile
+        if fallback_used:
+            # FR-7: the run has to be able to say why it took the default route.
+            context.record_route_profile_fallback(
+                "product_discovery", raw_route_profile_detail(data) or None
+            )
         context.project_name = _str(data, "project_name")
         context.project_type = _str(data, "project_type")
         context.platform = _str(data, "platform")
@@ -464,9 +645,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         context.acceptance_criteria = _list(data, "acceptance_criteria")
         context.assumptions = _list(data, "assumptions")
         context.add_artifact("product_discovery", "product_brief", context.product_summary)
-        if context.route_profile == "broad":
-            return UiUxProMaxState.DESIGN_INTELLIGENCE
-        return UiUxProMaxState.TARGETED_DESIGN_RESEARCH
+        return next_state_after_product_discovery(context)
 
     async def _design_research(
         self, context: UiUxProMaxContext, *, targeted: bool
@@ -496,9 +675,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             context.research_summary,
             context.research_artifact_refs,
         )
-        if context.route_profile == "broad":
-            return UiUxProMaxState.DESIGN_SYSTEM_SYNTHESIS
-        return UiUxProMaxState.STACK_ADAPTATION
+        return next_state_after_design_research(context)
 
     async def _design_system_synthesis(self, context: UiUxProMaxContext) -> UiUxProMaxState:
         data = await self._run_phase(
@@ -582,9 +759,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             context.implementation_guide_summary,
             _list(data, "artifact_refs"),
         )
-        if context.route_profile == "accessibility_audit":
-            return UiUxProMaxState.VISUAL_UX_AUDIT
-        return UiUxProMaxState.EXPERIENCE_ARCHITECTURE
+        return next_state_after_stack_adaptation(context)
 
     async def _experience_architecture(self, context: UiUxProMaxContext) -> UiUxProMaxState:
         data = await self._run_phase(
@@ -655,14 +830,15 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         context.add_artifact(
             "visual_ux_audit", "audit_report", context.audit_summary, context.visual_evidence_refs
         )
-        if (
-            context.route_profile != "accessibility_audit"
-            and context.audit_findings
-            and context.remediation_cycles < self._max_remediation_cycles
-        ):
+        remediation_requested = bool(
+            context.audit_findings and context.remediation_cycles < self._max_remediation_cycles
+        )
+        next_state = next_state_after_visual_ux_audit(
+            context, remediation_requested=remediation_requested
+        )
+        if next_state is UiUxProMaxState.DESIGN_REMEDIATION:
             context.remediation_cycles += 1
-            return UiUxProMaxState.DESIGN_REMEDIATION
-        return UiUxProMaxState.DESIGN_ACCEPTANCE
+        return next_state
 
     async def _design_remediation(self, context: UiUxProMaxContext) -> UiUxProMaxState:
         data = await self._run_phase(
@@ -852,7 +1028,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
             PhaseAnnotation(
                 workflow_name=self.workflow_name,
                 phase_name=phase,
-                phase_index=phases.index(phase),
+                phase_index=phase_index_in(context.route_profile, phase),
                 total_phases=len(phases),
                 run_id=context.run_id,
                 intent=context.intent,
@@ -871,10 +1047,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         next_state: UiUxProMaxState,
     ) -> None:
         next_phase = None if next_state.is_terminal else next_state.name.lower()
-        phases = self._active_phases(context)
-        phase_index = (
-            phases.index(next_phase) if next_phase in phases else phases.index(completed_phase)
-        )
+        phase_index = phase_index_in(context.route_profile, next_phase or completed_phase)
         if next_state in {
             UiUxProMaxState.DESIGN_SYSTEM_SYNTHESIS,
             UiUxProMaxState.DESIGN_REMEDIATION,
@@ -888,7 +1061,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         elif (
             not next_state.is_terminal
             and next_phase is not None
-            and phases.index(next_phase) != phases.index(completed_phase) + 1
+            and phase_index != phase_index_in(context.route_profile, completed_phase) + 1
         ):
             outcome = "branch"
         elif next_state is UiUxProMaxState.BLOCKED:
@@ -1004,7 +1177,9 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         common: dict[str, object] = {
             "request": context.intent,
             "project_root": context.project_root,
-            "scope": context.route_profile,
+            # Echo the canonical profile: the model must never see a raw or
+            # aliased spelling that no topology can resolve.
+            "scope": normalise_route_profile(context.route_profile)[0],
             "product_brief": {
                 "project": context.project_name,
                 "product_type": context.project_type,
@@ -1089,7 +1264,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
                 "acceptance_criteria": context.acceptance_criteria,
                 "prior_findings": context.audit_findings,
                 "remediation_cycle": context.remediation_cycles,
-                "accessibility_audit_only": context.route_profile == "accessibility_audit",
+                "accessibility_audit_only": is_accessibility_audit(context.route_profile),
             },
             "design_remediation": {
                 "audit_summary": context.audit_summary,
@@ -1197,7 +1372,7 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         return params.model_for_phase(phase, "") if params is not None else ""
 
     def _active_phases(self, context: UiUxProMaxContext) -> tuple[str, ...]:
-        return PHASES_BY_PROFILE.get(context.route_profile, PHASES_BY_PROFILE["broad"])
+        return active_phases_for(context.route_profile)
 
     @staticmethod
     def _phase_index(state: UiUxProMaxState, phases: tuple[str, ...]) -> int:

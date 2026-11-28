@@ -198,6 +198,36 @@ Subagents now run until they finish.
   resumes from the same checkpoint. The confirmation comes after the turn's own
   closing rows.
 
+### Fixed — `ui_ux_pro_max` no longer dies with `ValueError: tuple.index(x): x not in tuple`
+
+- **One route profile, one vocabulary.** Four places disagreed about what an
+  unknown `route_profile` meant: the transition decision compared the raw value
+  and sent an unrecognised profile to `TARGETED_DESIGN_RESEARCH`, while the
+  phase tuple resolved it to `broad`, which does not define that phase. The
+  resulting `phases.index(...)` raised the bare `ValueError`, which the TUI
+  showed as `ValueError: tuple.index(x): x not in tuple` and gave no way to
+  recover. `normalise_route_profile()` is now the single normaliser (alias
+  table, case-fold, separator rewrite, `broad` default with a fallback flag),
+  and both the transition and the phase tuple read its output, so the two can
+  no longer disagree.
+- **A legacy checkpoint no longer breaks the resume.** The recorded session
+  checkpoints carry `route_profile: ""`; restoring one used to raise, the
+  checkpoint decoder swallowed the error and returned `None`, and the run lost
+  its cursor. An empty, missing or unrecognised profile now restores as `broad`;
+  only a wrong *type* is rejected, and a checkpoint is always written back with
+  a canonical value.
+- **The failure is actionable.** A genuine topology mismatch raises a typed
+  `PhaseTopologyError` naming the workflow, the phase, the active profile and
+  the phases that profile schedules, classified as a `configuration` failure
+  instead of a generic `ValueError`.
+- **A fallback says so.** `/workflow status` reports
+  `route profile fell back to broad (source=…, value=…)` for the rest of the run,
+  so a resumed run explains itself instead of silently changing plan.
+- `complete_product_discovery` now names `details["scope"]` as the routing key
+  in its docstring and phase prompt, and accepts `classification`,
+  `route_profile` and `profile` as input spellings, so the observed
+  `{"classification": "broad"}` payload routes as `broad`.
+
 ### Fixed — the window title and taskbar progress no longer blank the screen
 
 - **Control sequences bypass the live block's text proxy.** While the live block

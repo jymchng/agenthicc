@@ -558,10 +558,34 @@ def _fmt_exc(exc: BaseException) -> str:
     return f"{name}: {msg}" if msg else name
 
 
-def _workflow_failure_kind(exc: object) -> str:
-    """Map common workflow exception classes to stable recovery categories."""
-    from agenthicc.runners.workflow_handle import classify_workflow_failure
+def _declared_failure_kind(exc: object) -> object:
+    """Return the ``failure_kind`` the exception's class declares, if any.
 
+    Read from the class dictionaries along the MRO rather than with ``getattr``
+    so an exception can advertise its recovery category without spending the
+    repository's ``getattr`` budget, and so an *inherited* declaration is found
+    even when the subclass itself declares nothing.
+    """
+    for klass in type(exc).__mro__:
+        if "failure_kind" in klass.__dict__:
+            return klass.__dict__["failure_kind"]
+    return None
+
+
+def _workflow_failure_kind(exc: object) -> str:
+    """Map common workflow exception classes to stable recovery categories.
+
+    An exception may declare its own category with a ``failure_kind`` class
+    attribute (``PhaseTopologyError`` declares ``"configuration"``).  A declared
+    value wins over the wording heuristics so a profile/topology mismatch is
+    reported as a configuration error by type, not because its message happened
+    to contain the word "profile".
+    """
+    from agenthicc.runners.workflow_handle import WorkflowFailureKind, classify_workflow_failure
+
+    declared = _declared_failure_kind(exc)
+    if isinstance(declared, str) and declared in {kind.value for kind in WorkflowFailureKind}:
+        return declared
     disposition = classify_workflow_failure(exc)
     text = str(exc).lower()
     if disposition.kind == "workflow_error" and any(

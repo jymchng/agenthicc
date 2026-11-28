@@ -427,4 +427,18 @@ def status_report(app_state: AppState) -> list[tuple[str, str]]:
     if session_id:
         rows.append(("Log", str(get_session_log_path(session_id))))
         rows.append(("Memory", str(journal_path_for(session_id))))
+    rows.extend(_workflow_rows(app_state))
     return rows
+
+
+def _workflow_rows(app_state: AppState) -> list[tuple[str, str]]:
+    """Return the Workflow row, or nothing when the run has no diagnostic.
+
+    A workflow records a bounded ``diagnostic`` when it had to fall back to a
+    default (for example an unrecognised route profile); reporting it here is
+    what lets a resumed run explain itself instead of silently changing plan.
+    """
+    run = app_state.workflow_run()
+    if run is None or not run.diagnostic:
+        return []
+    return [("Workflow", f"{run.workflow_name}: {run.diagnostic}")]

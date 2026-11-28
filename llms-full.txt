@@ -3684,6 +3684,24 @@ unrestricted web searches, or automatically persists generated skill output.
 If unavailable or failing, it records an explicit limitation and uses
 repository-grounded evidence.
 
+### normalise_route_profile / ROUTE_PROFILE_ALIASES / PhaseTopologyError
+
+`agenthicc.workflows.ui_ux_pro_max.normalise_route_profile(value) -> tuple[str,
+bool]` is the one place a route profile is validated (PRD-265): a canonical
+`broad`, `targeted` or `accessibility_audit` passes through, a spelling in
+`ROUTE_PROFILE_ALIASES` (`"Broad"`, `"focused"`, `"a11y"`, `"broad-design"`)
+maps onto one, and anything else (a missing key, `""`, an unknown word, a
+non-string) becomes `broad` with `fallback_used=True`. The transition after each
+phase, the active phase tuple, the checkpoint writer and reader, and
+`resolve_checkpoint_topology` all use it, so they cannot disagree. The runner
+reads the profile from `details["scope"]` of `complete_product_discovery`, and
+accepts `classification`, `route_profile` and `profile` as aliases for the key.
+A fallback is recorded on the context and shown by `/status` as a Workflow row.
+`PhaseTopologyError(workflow, phase, profile, phases)` replaces a bare
+`tuple.index` `ValueError` when a phase is not in the profile's tuple; it
+declares `failure_kind = "configuration"`. A checkpoint with `route_profile: ""`
+restores as `broad` and is rewritten canonically at the next boundary.
+
 ### UiUxProMaxContext
 
 Bounded typed product brief, route profile, research evidence summaries,

@@ -12,6 +12,7 @@ from agenthicc.workflows.ui_ux_pro_max.state import (
     PHASES_BY_PROFILE,
     UiUxProMaxContext,
     UiUxProMaxState,
+    normalise_route_profile,
 )
 
 if TYPE_CHECKING:
@@ -156,12 +157,10 @@ class UiUxProMax(WorkflowPlugin):
     def resolve_checkpoint_topology(
         cls, context_payload: Mapping[str, object]
     ) -> WorkflowCheckpointTopology:
-        profile_value = context_payload.get("route_profile", "broad")
-        profile = (
-            profile_value
-            if isinstance(profile_value, str) and profile_value in PHASES_BY_PROFILE
-            else "broad"
-        )
+        # Normalise through the same alias table the runner uses, so a legacy or
+        # aliased checkpoint profile resolves to the topology the run will
+        # actually follow instead of silently defaulting to broad.
+        profile, _ = normalise_route_profile(context_payload.get("route_profile"))
         phase_names = PHASES_BY_PROFILE[profile]
         next_edges: list[str | None] = []
         reject_edges: list[str | None] = []
