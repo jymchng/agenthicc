@@ -24,7 +24,6 @@ from agenthicc.background.session_messages import (
     SessionMessageError,
     SessionMessenger,
 )
-from agenthicc.background.store import default_background_root
 from agenthicc.background.worker import WorkerRequest, run_worker
 
 from .test_background_session_tools import _production_builder
@@ -82,14 +81,15 @@ def _create(store: BackgroundStore, session_id: str, workspace: Path, tmp_path: 
     )
 
 
-def _request(session_id: str, workspace: Path) -> WorkerRequest:
+def _request(session_id: str, workspace: Path, store_root: Path) -> WorkerRequest:
     return WorkerRequest(
         session_id=session_id,
         workflow_name="",
         intent="work with the other session",
         cwd=str(workspace),
         config_path=None,
-        set_overrides=(),
+        # Where the workers' contexts find the store, as in production: the setting.
+        set_overrides=(f"background.store_path={store_root}",),
         dangerously_skip_permissions=False,
         mode_name="Yolo",
     )
@@ -152,14 +152,16 @@ async def test_an_agent_messages_another_live_session_and_the_loop_rule_holds(
     from agenthicc.runners import tui_session
 
     monkeypatch.setattr(tui_session, "_build_agent_runner", lambda *a, **k: runners.pop(0))
-    # The store the workers' contexts open: the default root, under the patched home.
-    store = BackgroundStore(default_background_root())
+    # A custom store root, set the way an operator sets it. Each worker's context must find
+    # its peers there and not in the default location.
+    store_root = tmp_path / "custom-background-store"
+    store = BackgroundStore(store_root)
     _create(store, RECEIVER, workspace, tmp_path)
     _create(store, SENDER, workspace, tmp_path)
 
-    receiver = asyncio.create_task(run_worker(_request(RECEIVER, workspace), store))
+    receiver = asyncio.create_task(run_worker(_request(RECEIVER, workspace, store_root), store))
     await _until_asking(store, RECEIVER)
-    sender = asyncio.create_task(run_worker(_request(SENDER, workspace), store))
+    sender = asyncio.create_task(run_worker(_request(SENDER, workspace, store_root), store))
     await _until_asking(store, SENDER)
 
     # The sender's agent sent while both runtimes were alive: the message is queued

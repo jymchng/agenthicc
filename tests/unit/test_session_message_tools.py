@@ -23,6 +23,7 @@ from agenthicc.background.session_messages import (
 )
 from agenthicc.background.store import BackgroundStore
 from agenthicc.config import AgenthiccConfig, SessionSettings, _dict_to_config
+from agenthicc.runners.session_context import SessionContext
 from agenthicc.runners.session_tools import session_tools
 from agenthicc.tools.base import tool_name
 from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
@@ -80,6 +81,30 @@ def test_agent_messaging_is_on_by_default() -> None:
 def test_the_setting_turns_agent_messaging_off_and_on(value: object, expected: bool) -> None:
     config = _dict_to_config({"sessions": {"agent_messaging": value}})
     assert config.sessions.agent_messaging is expected
+
+
+def _context(tmp_path: Path, *, setting: bool, background: bool) -> SimpleNamespace:
+    """The members ``SessionContext.session_messenger`` reads from its session."""
+    return SimpleNamespace(
+        cfg=AgenthiccConfig(sessions=SessionSettings(agent_messaging=setting)),
+        background_enabled=background,
+        background_store_root=tmp_path / "background",
+        session_id="me",
+        _workspace_root=tmp_path,
+    )
+
+
+def _build_messenger(context: SimpleNamespace) -> SessionMessenger | None:
+    return SessionContext.session_messenger.func(context)  # type: ignore[attr-defined, no-any-return]
+
+
+def test_the_context_builds_a_messenger_only_when_the_setting_and_background_sessions_are_on(
+    tmp_path: Path,
+) -> None:
+    messenger = _build_messenger(_context(tmp_path, setting=True, background=True))
+    assert isinstance(messenger, SessionMessenger) and messenger.sender_session_id == "me"
+    assert _build_messenger(_context(tmp_path, setting=False, background=True)) is None
+    assert _build_messenger(_context(tmp_path, setting=True, background=False)) is None
 
 
 # ── what is offered ──────────────────────────────────────────────────────────
