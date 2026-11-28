@@ -1,7 +1,7 @@
 ---
 title: "COMM-02: Tell the agent when a background terminal finishes"
-status: Proposed
-version: 1.0.0
+status: Implemented
+version: 1.1.0
 date: 2026-11-27
 priority: P0
 related_prds:
@@ -107,11 +107,53 @@ subprocess and the real delivery path; an e2e cassette where a model starts a
 command in the background, the turn ends, the command finishes, and the next turn
 sees the notice without a tool call.
 
+## What shipped (1.1.0)
+
+| Piece | Where |
+|---|---|
+| `PendingNotice.kind == "terminal"`, a derived `source` of `terminal_notice`, `terminal_notice(record)` | `subagents/delivery.py` |
+| `RUNTIME_NOTICE_SOURCES` replaces `SUBAGENT_NOTICE_SOURCES` and lists `terminal_notice`; its four consumers (session title, prompt history, the scroll-buffer renderer) updated | `subagents/delivery.py`, `tui/conversation_store.py`, `tui/runtime/session_log.py`, `tui/workspace/appender.py` |
+| `JournalNoticeSource(terminals=…)` carries the notices for the unscoped source only | `subagents/delivery.py` |
+| `TerminalManager.unannounced_finished()`, `observe()`, `started_at` | `background/terminals.py` |
+| `wait_terminal`, `inspect_terminal`, `stop_terminal` mark what they return as read | `background/terminals.py`, `tools/exec/__init__.py` |
+| `_hint_finished_terminals`: one wake per terminal | `runners/tui_session.py` |
+| A headless turn boundary delivers them too | `subagents/delivery.py` (`deliver_session_background_notices`) |
+| **What the operator reads.** The notice event carries the terminal's final `state`. The agents hub transcript shows it as a `terminals` row, `agent notified · Terminal <how it ended> — <label> · <id>`, marked `✓` (exited), `✗` (failed, timed out, orphaned) or `●` (stopped, cancelled); the output tail stays in the model's notice. Before this, the hub's check was a `subagent_` prefix, so the notice would have read as the operator's own message (`you`) | `subagents/delivery.py`, `tui/workspace/agents_hub/detail.py`, `tui/workspace/agents_hub/render.py` |
+
+Decisions where the shipped code differs from the proposal above:
+
+1. **No new journal record and no `TerminalNoticeSource` class.** The delivered
+   marker is the notice's message id in the journal, exactly as for worker
+   questions and updates (`journal.has_message_id`), so a notice survives a
+   restart without a second store to keep consistent with the terminal store.
+   This removes the risk of two records disagreeing after a crash.
+2. **"Finished" is relative to the manager.** A terminal is news only if it ended
+   after this manager started, which also counts a terminal recovered as an
+   orphan at start-up. Without that rule, resuming a session would announce every
+   terminal it ever ran.
+3. **The cap has no "count of the rest".** At most `MAX_TERMINAL_NOTICES` (8) are
+   claimed at a boundary and the remainder follow at the next. A summary line was
+   dropped: with a cap of eight and delivery at every boundary, the backlog
+   clears within a turn or two and the count added a second code path.
+4. **Wake conditions were read, not assumed.** `_schedule_subagent_wake` holds a
+   wake back on: a resume pending, a paused wake, a loop that is not idle, a
+   boundary not ready, a workflow stack not running, a workflow paused or
+   pausing, and open workflow recovery records. Terminal notices inherit all of
+   them.
+5. **No minimum runtime.** Every ended terminal is announced. A short command the
+   agent started with `background: true` and then read is not announced (it was
+   read); one it never reads is. A configurable minimum was not added without
+   evidence that the noise is real.
+
+Tests: `tests/unit/test_terminal_completion_notices.py` (real subprocesses and a
+real journal), with mutations checked: removing either `observe` in `wait()`,
+the journal guard, or the session hint each fails a test.
+
 ## Risks
 
-- Waking a session for every short background command is noisy. Mitigation: a
-  minimum runtime, or a per-turn cap, both configurable; decided with the
-  open question in COMM-00.
+- Waking a session for every short background command is noisy. Mitigation if it
+  proves so: a minimum runtime, or a per-turn cap, both configurable; decided
+  with the open question in COMM-00.
 - The journal and the terminal store are separate records. The delivered marker
   must live where the notice source reads it, or the two will disagree after a
   crash.

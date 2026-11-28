@@ -67,6 +67,7 @@ the key was known and did nothing for a command.
 | `foreground_commands` signal and `backgroundable()` | `tui/conversation_store.py` |
 | `work.background`, `BackgroundWorkCommand`, `BackgroundWorkCapability`, the `backgroundable` condition | `tui/actions.py`, `tui/runtime/commands.py`, `tui/input/capabilities.py`, `tui/keymap_phrases.py` |
 | `_background_work_command`, `_project_foreground_commands` | `runners/tui_session.py` |
+| A receipt is shown as `moved to the background · <terminal id> · running` plus what the command had printed, not as the receipt's JSON (which began with a lone `{`), in the tool row and the agents hub transcript. A plain `background: true` start reads `started · <id> · running` | `tui/tool_summary.py` |
 
 ## Acceptance criteria
 
@@ -94,7 +95,8 @@ keymap and notice tests.
   post-processes the finished result (JUnit summary, interpreter metadata) and a
   receipt would flow into logic that expects a finished process. They need their
   own handling before they can be offered.
-- Completion is not pushed to the agent; it must poll. That is COMM-02.
+- Completion was not pushed to the agent when this shipped; it had to poll. COMM-02
+  adds the notice.
 - A session attached to a hosted runtime (SUBAGENT-19) runs its tool calls in
   the runtime process, and this change registers a command with *that*
   process's manager. Nothing carries the attached terminal's key press there, so

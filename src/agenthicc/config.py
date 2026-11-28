@@ -61,6 +61,7 @@ __all__ = [
     "ResolvedProviderProfile",
     "SecretReference",
     "SecuritySettings",
+    "SessionSettings",
     "SkillsSettings",
     "SubagentSettings",
     "SubagentDepthLimit",
@@ -1907,6 +1908,17 @@ class SkillsSettings:
 
 
 @dataclass
+class SessionSettings:
+    """``[sessions]`` — how a session's agent deals with other agenthicc sessions (COMM-05)."""
+
+    #: Offer the agent ``list_sessions`` and ``message_session``. On by default: the
+    #: tools work only where background sessions are enabled, ``message_session``
+    #: asks first in Safe mode and is withheld in Plan mode, and a receiving session
+    #: reads the message as untrusted context. ``false`` removes both tools.
+    agent_messaging: bool = True
+
+
+@dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     providers: dict[str, ProviderProfile] = field(default_factory=dict)
@@ -1924,6 +1936,7 @@ class AgenthiccConfig:
     loops: LoopSettings = field(default_factory=LoopSettings)
     ui: UISettings = field(default_factory=UISettings)
     subagents: SubagentSettings = field(default_factory=SubagentSettings)
+    sessions: SessionSettings = field(default_factory=SessionSettings)
     workflow_stack_max_depth: int = 4
 
     def to_system_settings(self) -> SystemSettings:
@@ -2798,6 +2811,10 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         default_skill_directory=str(skill_data.get("default_skill_directory", "")),
     )
 
+    sessions = SessionSettings(
+        agent_messaging=_as_bool(_section(data.get("sessions")).get("agent_messaging"), True),
+    )
+
     agents = AgentsSettings.from_dict(_section(data.get("agents")))
 
     ui_data = _section(data.get("ui"))
@@ -3003,6 +3020,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         workflow_stack_max_depth=workflow_stack_max_depth,
         ui=ui,
         subagents=subagents,
+        sessions=sessions,
     )
 
 

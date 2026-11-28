@@ -83,14 +83,23 @@ async def test_run_proc_reports_spawn_failures_and_redacts_output(tmp_path: Path
 
 
 async def test_run_proc_cancellation_performs_cleanup(tmp_path: Path) -> None:
+    # Cancel only once the child has proved it is running.  A fixed sleep can end
+    # before the thread-pool directory check at the top of ``_run_proc`` returns on
+    # a busy host, which cancels before any process exists and raises instead.
+    started = tmp_path / "started"
+    script = "import pathlib, sys, time; pathlib.Path(sys.argv[1]).touch(); time.sleep(10)"
     task = asyncio.create_task(
         _run_proc(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
+            [sys.executable, "-c", script, str(started)],
             cwd=str(tmp_path),
             timeout=0.0,
         )
     )
-    await asyncio.sleep(0.05)
+    for _ in range(1500):
+        if started.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert started.exists(), "the command never started"
     task.cancel()
     result = await task
     assert result["state"] == "cancelled"
@@ -102,7 +111,11 @@ class _TerminalManager:
 
     def __init__(self) -> None:
         self.started: dict[str, object] = {}
+        self.observed: list[str] = []
         self.record = SimpleNamespace(session_id="session-1", result=lambda: {"ok": True})
+
+    def observe(self, terminal_id: str) -> None:
+        self.observed.append(terminal_id)
 
     async def start(self, **kwargs: object) -> dict[str, object]:
         self.started = kwargs
@@ -181,6 +194,8 @@ async def test_execution_tools_reject_bad_inputs_and_delegate_terminal_lifecycle
             {"terminal_id": "term-1", "force": True}, {"terminal_manager": manager}
         )
     )["stop_requested"] is True
+    # Handing the agent a terminal's result marks it read, so it is not announced again.
+    assert manager.observed == ["term-1", "term-1"]  # inspect, then stop
 
 
 async def test_python_and_test_tools_validate_timeout_and_arguments(tmp_path: Path) -> None:

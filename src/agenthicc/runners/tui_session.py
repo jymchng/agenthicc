@@ -1518,6 +1518,13 @@ async def _build_session_context_impl(
         browser_manager = None
         browser_tools = ()
 
+    # COMM-05: the agent may message the other live sessions of this project, through the
+    # store its background workers use. The context builds the messenger on first use; this
+    # is only whether background sessions are on, so the first prompt imports nothing new.
+    background_enabled = (
+        background_settings.enabled and os.environ.get("AGENTHICC_DISABLE_BACKGROUND", "") != "1"
+    )
+
     from agenthicc.runners.usage_ledger import UsageLedger
 
     def _legacy_token_events() -> Iterator[object]:
@@ -1673,6 +1680,8 @@ async def _build_session_context_impl(
         usage_ledger=usage_ledger,
         browser_manager=cast("BrowserSessionManager | None", browser_manager),
         browser_tools=cast("Iterable[ToolLike]", browser_tools),
+        background_enabled=background_enabled,
+        background_store_root=background_root,
         cfg_overrides=tuple(cli_overrides or ()),
         cfg_secret_overrides=tuple(cli_secret_overrides or ()),
         initial_workflow=initial_workflow,
@@ -2057,6 +2066,9 @@ class TUISession:
         self._msg_queue.items.subscribe(self._notify_subagent_turn_input)
         self._subagent_scheduler_context = contextvars.copy_context()
         self._subagent_hint_ids: set[str] = set()
+        #: Terminals whose end has already woken the session, so a burst of status
+        #: updates for one terminal wakes it once.
+        self._terminals_hinted: set[str] = set()
         self._subagent_wake_recoveries = 0
         self._subagent_wake_active = False
         self._subagent_resume_pending = ctx.resumed
@@ -3383,6 +3395,7 @@ class TUISession:
         conversation = self._ctx.app_state.conversation
         self._project_background_terminals(terminal_manager)
         self._project_foreground_commands(terminal_manager)
+        self._hint_finished_terminals(terminal_manager)
         if snapshot is None:
             conversation.clear_terminal_wait()
             redraw = getattr(self._workspace, "_redraw", None)
@@ -4389,6 +4402,25 @@ class TUISession:
             conversation.notify_transient(refused[0].capitalize())
         else:
             conversation.notify_transient("Nothing in the foreground to background")
+
+    def _hint_finished_terminals(self, terminal_manager: TerminalManager) -> None:
+        """Wake the session for each terminal that ended and has not been announced (COMM-02).
+
+        The notice itself is read from the manager by the session's notice
+        source at the next boundary; this only makes sure a session that is idle
+        looks now. Without a running loop (start-up) the periodic reconcile does.
+        """
+        fresh = {
+            record.terminal_id for record in terminal_manager.unannounced_finished()
+        } - self._terminals_hinted
+        if not fresh or self._install_subagent_notices() is None:
+            return
+        self._terminals_hinted |= fresh
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._hint_subagent_activity()
 
     def _project_foreground_commands(self, terminal_manager: TerminalManager) -> None:
         """Tell the reactive state which commands a running tool call waits on."""
@@ -5733,7 +5765,9 @@ class TUISession:
         registry = registry_for_session(self._ctx.session_id, self._ctx.app_state.conversation)
         registry.on_terminal(self._hint_subagent_activity)
         registry.on_activity(self._hint_subagent_activity)
-        self._subagent_notices = JournalNoticeSource(conversation.journal, registry)
+        self._subagent_notices = JournalNoticeSource(
+            conversation.journal, registry, terminals=self._ctx.terminal_manager
+        )
         return self._subagent_notices
 
     def _install_phase_subagents(self) -> PhaseSubagentHost | None:

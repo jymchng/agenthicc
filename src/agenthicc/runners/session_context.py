@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.skills.loader import SkillDef
+    from agenthicc.background.session_messages import SessionMessenger
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.session_service import SessionService
     from agenthicc.runners.usage_ledger import UsageLedger
@@ -126,6 +127,12 @@ class SessionContext:
     # ── optional browser integration (PRD-159) ─────────────────────────────
     browser_manager: "BrowserSessionManager | None" = None
     browser_tools: "Iterable[ToolLike]" = field(default_factory=tuple)
+
+    # ── messaging other sessions (COMM-05) ──────────────────────────────────
+    #: Whether background sessions are enabled for this invocation; without them there
+    #: is no other session to message. ``session_messenger`` is built from these.
+    background_enabled: bool = False
+    background_store_root: "Path | None" = None
 
     # ── invocation configuration ────────────────────────────────────────────
     cfg_overrides: tuple[str, ...] = ()
@@ -216,6 +223,25 @@ class SessionContext:
             self.reload,
             self.processor,
             policy=self.cfg.security.authored_extension_policy,
+        )
+
+    @cached_property
+    def session_messenger(self) -> SessionMessenger | None:
+        """The messenger the agent's session tools use, built when a turn first needs it.
+
+        ``None`` when ``[sessions] agent_messaging`` is off or background sessions are:
+        then the session has neither ``list_sessions`` nor ``message_session``. Building
+        it here and not in the context builder keeps the module out of the first prompt.
+        """
+        if not (self.cfg.sessions.agent_messaging and self.background_enabled):
+            return None
+        from agenthicc.background.session_messages import SessionMessenger
+        from agenthicc.background.store import BackgroundStore
+
+        return SessionMessenger(
+            BackgroundStore(self.background_store_root),
+            self.session_id,
+            project_root=self._workspace_root,
         )
 
     @cached_property

@@ -292,6 +292,12 @@ read the current generation at their start, and a worker keeps the generation
 it received when spawned. Each call is still subject to the active capability
 and approval rules.
 
+Each session also supplies its own tools to every turn: `ask_user`, the memory
+tools, the browser tools and, unless `[sessions] agent_messaging = false`,
+`list_sessions` (read) and `message_session` (execute) for messaging the other
+running sessions of the project. See
+[background sessions](background-sessions.md#messages-from-other-sessions).
+
 ## Dependencies and import-time behavior
 
 A plugin may declare dependencies in the module:

@@ -1018,9 +1018,9 @@ class ConversationStore:
 
     def _title_from(self, event: ConversationEvent) -> None:
         """Title the session after its first prompt, once (TUX-02)."""
-        from agenthicc.subagents.delivery import SUBAGENT_NOTICE_SOURCES
+        from agenthicc.subagents.delivery import RUNTIME_NOTICE_SOURCES
 
-        if self.session_title() or event.payload.get("source") in SUBAGENT_NOTICE_SOURCES:
+        if self.session_title() or event.payload.get("source") in RUNTIME_NOTICE_SOURCES:
             return
         text = event.payload.get("text")
         if isinstance(text, str):

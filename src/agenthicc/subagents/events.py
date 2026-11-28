@@ -76,6 +76,7 @@ class SubagentEventKind(StrEnum):
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
     STOP_REQUESTED = "stop_requested"
+    MESSAGE_DELIVERED = "message_delivered"
     MESSAGE_ACKNOWLEDGED = "message_acknowledged"
     WORKER_FINISHED = "worker_finished"
     WORKER_FAILED = "worker_failed"
@@ -113,6 +114,7 @@ LIFECYCLE_TABLE: Final[tuple[LifecycleRow, ...]] = (
     LifecycleRow(
         _K.STOP_REQUESTED, None, "subagent_worker_stop_requested", ("stop_requested",), ()
     ),
+    LifecycleRow(_K.MESSAGE_DELIVERED, None, None, ("message_delivered",), ()),
     LifecycleRow(_K.MESSAGE_ACKNOWLEDGED, None, None, ("message_acknowledged",), ()),
     LifecycleRow(
         _K.WORKER_FINISHED, "SubagentCompleted", "subagent_worker_done", ("finished",), ("done",)

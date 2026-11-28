@@ -27,6 +27,7 @@ from agenthicc.tools.capabilities import tool_control
 if TYPE_CHECKING:
     from agenthicc.memory.journal import ConversationJournal
     from agenthicc.runners.agent_turn_context import TurnInputReason
+    from agenthicc.subagents.directory import PoolDirectory
     from agenthicc.subagents.phase import PhaseOwner
     from agenthicc.subagents.pool import SubagentPool
 
@@ -279,6 +280,12 @@ class AgentMessageBroker:
         self._closed = False
         #: When set, questions to the parent are refused with this status.
         self._parent_refusal = ""
+        #: How this pool's workers reach the workers of related pools (COMM-04); set
+        #: when the pool is registered, ``None`` for a pool nobody else can see.
+        self.directory: "PoolDirectory | None" = None
+        #: ``<pool_id>/<worker_id>`` addresses of workers of other pools that have
+        #: sent here. They may send to a member; they are never members themselves.
+        self._external_senders: set[str] = set()
 
     @classmethod
     def rehydrate(
@@ -357,6 +364,7 @@ class AgentMessageBroker:
             max_pending_questions=self._max_pending_questions,
         )
         broker.register_worker(worker_id)
+        broker.directory = self.directory
         return broker
 
     async def unregister_worker(self, worker_id: str, *, reason: str = "worker_lost") -> None:
@@ -396,6 +404,39 @@ class AgentMessageBroker:
             if recipient == "main" and sender != "main" and self.on_parent_activity is not None:
                 self.on_parent_activity()
             return envelope
+
+    async def send_from_pool(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        kind: MessageKind | str,
+        payload: Mapping[str, object] | str,
+        reply_to: str = "",
+        requires_response: bool = False,
+    ) -> AgentMessageEnvelope:
+        """Deliver one message from a worker of *another* pool to a worker of this one.
+
+        *sender* is the sender's ``<pool_id>/<worker_id>`` address. The caller (the
+        :class:`~agenthicc.subagents.directory.PoolDirectory`) has already decided
+        that the two pools are related; this broker still applies its own mailbox
+        and size limits. The recipient must be a worker: a foreign worker cannot
+        write to this pool's parent or broadcast to the pool.
+        """
+        if "/" not in sender:
+            raise CommunicationError("a sender from another pool needs a pool-qualified address")
+        if recipient in {"main", "pool"}:
+            raise CommunicationError("a worker of another pool may message a worker only")
+        async with self._lock:
+            self._external_senders.add(sender)
+            return self._send_locked(
+                sender=sender,
+                recipient=recipient,
+                kind=kind,
+                payload=payload,
+                reply_to=reply_to,
+                requires_response=requires_response,
+            )
 
     def notify_parent(self) -> None:
         """Hint the parent that a worker reached a durable outcome to read."""
@@ -554,6 +595,46 @@ class AgentMessageBroker:
                 )
             if not mailbox:
                 self._message_event.clear()
+            return result
+
+    async def peek(
+        self,
+        recipient: str,
+        *,
+        limit: int = 16,
+        exclude: frozenset[str] = frozenset(),
+    ) -> list[dict[str, object]]:
+        """Show *recipient*'s pending mail in delivery order without taking it.
+
+        :meth:`poll` pops a message from the mailbox, so mail polled in the middle
+        of a run and then lost to a transport retry's memory rollback would never
+        come back.  ``peek`` changes nothing: the mail stays queued until it is
+        acknowledged or polled.  *exclude* names the messages the caller already
+        has, so a second look at the same mailbox adds only what is new.
+        """
+        if limit < 1:
+            raise CommunicationError("limit must be positive")
+        async with self._lock:
+            self._validate_recipient(recipient)
+            now = self._clock()
+            result: list[dict[str, object]] = []
+            # The same order ``poll`` uses: direct mail first, then broadcast.
+            queues = (
+                self._mailboxes[recipient],
+                self._mailboxes["pool"] if recipient != "pool" else (),
+            )
+            for queue in queues:
+                for message_id in queue:
+                    if message_id in exclude:
+                        continue
+                    record = self._messages.get(message_id)
+                    if record is None or recipient in record.acknowledged_by:
+                        continue
+                    if record.envelope.expires_at is not None and record.envelope.expires_at <= now:
+                        continue
+                    result.append(record.envelope.to_dict())
+                    if len(result) >= min(limit, 64):
+                        return result
             return result
 
     async def acknowledge(self, recipient: str, message_id: str) -> dict[str, object]:
@@ -897,7 +978,7 @@ class AgentMessageBroker:
 
     def _validate_sender(self, sender: str) -> None:
         self._validate_identifier(sender, "sender")
-        if sender not in self._members:
+        if sender not in self._members and sender not in self._external_senders:
             raise CommunicationError("sender is not a member of this pool")
 
     def _validate_recipient(self, recipient: str) -> None:
@@ -1080,22 +1161,77 @@ def make_child_communication_tools(
         recipient: str,
         message: str,
         kind: str = "information",
+        requires_response: bool = False,
+        reply_to: str = "",
     ) -> dict[str, object]:
-        """Send a bounded message to another worker in this pool.
+        """Send a bounded message to another worker, in this pool or a related one.
+
+        A reply from the recipient reaches you in your mail, between your tool
+        calls. Ask across pools by sending with ``requires_response`` and reading
+        the reply; ``ask_peer`` is for this pool only.
 
         Args:
-            recipient: The peer worker's ID in this pool.
+            recipient: A peer worker's ID in this pool, or ``<pool_id>/<worker_id>``
+                for a worker of a related pool (``list_reachable_workers`` lists them).
             message: The message, at most 16 KB.
             kind: ``status``, ``information``, ``instruction``, ``handoff`` or ``error``
                 (default ``information``).
+            requires_response: Whether you expect the recipient to reply.
+            reply_to: The ``message_id`` of the message you are answering, if any.
         """
-        envelope = await broker.send(
-            sender=worker_id,
-            recipient=recipient,
-            kind=kind,
-            payload={"text": message},
-        )
+        directory = broker.directory
+        if "/" in recipient:
+            if directory is None:
+                raise CommunicationError(
+                    "unknown_pool: this pool cannot reach other pools; send to a worker of "
+                    "your own pool by its ID"
+                )
+            envelope = await directory.send(
+                sender_pool=broker.pool_id,
+                sender_worker=worker_id,
+                recipient=recipient,
+                message=message,
+                kind=kind,
+                requires_response=requires_response,
+                reply_to=reply_to,
+            )
+        else:
+            envelope = await broker.send(
+                sender=worker_id,
+                recipient=recipient,
+                kind=kind,
+                payload={"text": message},
+                requires_response=requires_response,
+                reply_to=reply_to,
+            )
         return {"ok": True, "message_id": envelope.message_id, "status": "sent"}
+
+    @tool_control
+    @tool()
+    async def list_reachable_workers() -> dict[str, object]:
+        """List the running workers you can message, with the address to use.
+
+        Workers of your own pool come first, then sibling pools, then pools you
+        started, then pools that started yours. Use the ``address`` as the
+        ``recipient`` of ``send_peer_message``.
+        """
+        directory = broker.directory
+        if directory is not None:
+            return {"ok": True, "workers": directory.reachable(broker.pool_id, worker_id)}
+        peers = sorted(broker.members - {"main", worker_id})
+        return {
+            "ok": True,
+            "workers": [
+                {
+                    "address": peer,
+                    "pool_id": broker.pool_id,
+                    "worker_id": peer,
+                    "label": "",
+                    "relation": "same_pool",
+                }
+                for peer in peers
+            ],
+        }
 
     @tool_control
     @tool()
@@ -1142,6 +1278,7 @@ def make_child_communication_tools(
         ask_parent,
         poll_agent_messages,
         send_peer_message,
+        list_reachable_workers,
         ask_peer,
         answer_peer,
     ]

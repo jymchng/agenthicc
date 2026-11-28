@@ -1769,6 +1769,7 @@ class AgentTurnRunner:
         )
         from agenthicc.memory.journaled import JournaledShortTermMemory
         from agenthicc.runners.agent_turn_context import current_notice_source
+        from agenthicc.runners.tool_boundary import commit_tool_results
         from agenthicc.subagents.delivery import deliver_notices
         from agenthicc.subagents.phase import POOL_TOOLS, PhasePoolGate, current_phase_pools
         from agenthicc.config import SubagentSettings
@@ -1849,23 +1850,7 @@ class AgentTurnRunner:
                     )
                     if queued is None and not notices:
                         return results
-                    exchange = getattr(ctx.memory, "active_tool_exchange", None)
-                    if exchange is not None and callable(
-                        getattr(ctx.memory, "commit_tool_exchange", None)
-                    ):
-                        # ``tool_calls`` is the approved subset.  The active
-                        # transaction still owns the complete assistant batch;
-                        # commit against it so lauren-ai can synthesize stable
-                        # results for calls filtered out by approval.  Passing
-                        # only the subset through ``_complete_tool_results``
-                        # would leave a missing-result batch immediately before
-                        # the queued user message.
-                        ctx.memory.commit_tool_exchange(exchange, results)
-                    else:
-                        from lauren_ai._agents._runner import _complete_tool_results
-
-                        complete_results = _complete_tool_results(tool_calls, results)
-                        ctx.memory.add_tool_results(complete_results)
+                    commit_tool_results(ctx.memory, tool_calls, results)
                     if (
                         notices
                         and source is not None

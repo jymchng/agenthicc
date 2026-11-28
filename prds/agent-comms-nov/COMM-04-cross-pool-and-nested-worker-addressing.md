@@ -1,7 +1,7 @@
 ---
 title: "COMM-04: Address workers across pools and nesting levels"
-status: Proposed
-version: 1.0.0
+status: Implemented
+version: 1.1.0
 date: 2026-11-27
 priority: P2
 related_prds:
@@ -119,9 +119,61 @@ Broker unit tests for the relatedness rule and for refusals; an integration test
 with two real pools and a scripted provider; the existing pool-scoped tests stay
 unchanged, since a same-pool address keeps working unqualified.
 
+## What shipped (1.1.0)
+
+| Piece | Where |
+|---|---|
+| `PoolDirectory`: the relation rule, `reachable`, `send` with named refusals and a per-pair limit; `worker_address` | `subagents/directory.py` |
+| `AgentMessageBroker.send_from_pool`, `directory`, the admitted-sender set; `for_retry` carries the directory | `subagents/communication.py` |
+| `send_peer_message` takes `<pool_id>/<worker_id>`, `requires_response` and `reply_to`; the new `list_reachable_workers` tool | `subagents/communication.py` |
+| A registered pool's broker gets the directory | `subagents/tool.py` |
+
+**The open question, answered.** The PRD did not know how `"main"` resolves in a nested
+pool. A pool's `lineage` lists the spawning *workers*, root first, as
+`<pool_id>:<task_id>`, and a worker's parent tools are bound to that owner string
+(`make_parent_communication_tools(owner=…)`). So the `main` of a nested pool is the
+worker that started it, which reads its updates with `collect_subagent_results`, and
+control stays limited to descendants (SUBAGENT-11 goal 8). The relation rule is a
+function of `lineage` and pool ids alone, as proposed: a pool is an *ancestor* of
+another when one of the other's lineage entries begins with its id, and a *sibling*
+when the lineages are equal.
+
+Decisions where the shipped code differs from the proposal above:
+
+1. **No blocking `ask_peer` across pools.** An `ask_peer` question is created in the
+   *recipient's* broker, and the asking worker's follow-up loop waits only on
+   questions in its *own* broker, so a cross-pool question would never be waited on.
+   A cross-pool ask is instead a message with `requires_response=true`, answered by a
+   message with `reply_to`, which reaches the asker between its tool calls (COMM-03).
+   The proposal's acceptance criterion 2 (a grandchild asks its grandparent and
+   gets the answer without the intermediate worker taking a turn) holds, but the
+   answer arrives as mail, not as the tool's return value.
+2. **A pair limit instead of a hop count.** Two workers that keep replying stop at 32
+   messages in one direction (`rate_limited`). A hop count in the envelope was not
+   added: the limit stops a loop with less state, and the PRD's reply-depth rule
+   needs a hop to be carried through a worker's model, which it does not do.
+3. **No outbound copy in the sender's broker.** The proposal had the sender's broker
+   record the message too. The sender's own tool call is already in its transcript,
+   and the recipient's `message_delivered` line names the sender's address, so both
+   ends can be read without a second record to keep in step.
+4. **Phase pools stay apart.** Pools of different workflow phases are never related,
+   which is stricter than the proposal's "different phases".
+5. **The nested route is tested with real lineage strings, not a real nested spawn.**
+   Two real top-level pools are covered end to end through a real session. The
+   ancestor and descendant relations (including a grandchild reaching its
+   grandparent) are covered against real brokers and handles whose `lineage` is built
+   as `spawn_subagents` builds it. A test that runs a worker which itself spawns a pool
+   was not written.
+
+Tests: `tests/unit/test_cross_pool_mail.py` and
+`tests/integration/test_cross_pool_mail.py`. Mutations checked: no ancestor relation,
+no phase check, a finished pool still taking mail, no pair limit, a foreign sender not
+admitted, a retried worker losing the route, and a registered pool never given its
+directory each fail a test.
+
 ## Risks
 
-- A cheap route between workers makes it easy to build chatter. The hop limit,
-  the per-pair rate limit and COMM-03's per-request cap bound it.
-- The nested-pool unknown above could change the design of point 2. It is
-  recorded so the design step starts there.
+- A cheap route between workers makes it easy to build chatter. The per-pair limit
+  and COMM-03's per-request cap bound it.
+- A worker's address contains a pool id the model must copy exactly; that is why
+  `list_reachable_workers` returns ready-made addresses.

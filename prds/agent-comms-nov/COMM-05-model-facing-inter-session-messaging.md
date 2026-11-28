@@ -1,8 +1,8 @@
 ---
 title: "COMM-05: Let an agent message another agenthicc session"
-status: Proposed
-version: 1.0.0
-date: 2026-11-27
+status: Implemented — agents can list and message live sessions; on by default
+version: 1.2.0
+date: 2026-11-28
 priority: P2
 related_prds:
   - COMM-00
@@ -120,11 +120,92 @@ tool-contract test for approval and capability withholding; an integration test
 with two real session runtimes, a scripted provider on each, and a message that
 crosses; and a cycle test.
 
+## What shipped (1.2.0)
+
+| Piece | Where |
+|---|---|
+| `SessionMessenger`: `addressable()` and `send()` over a real `BackgroundStore` and `BackgroundInputInbox`, with named refusals and a per-target limit | `background/session_messages.py` |
+| The fixed header, `frame_session_message`, `is_session_message`, `session_message_sender`, `session_message_chain` | `background/session_messages.py` |
+| **The origin chain**: a header line naming every session the exchange passed through; `note_input` sets or extends it as the worker delivers each input; `send` refuses `loop` and `chain_too_long` | `background/session_messages.py`, `background/worker.py` |
+| **The tools** `list_sessions` (read) and `message_session` (execute), built over the session's messenger and offered with the session's other tools | `runners/session_tools.py` |
+| **`[sessions] agent_messaging`**, default `true`; the messenger exists only when it is on and background sessions are enabled | `config.py`, `runners/tui_session.py`, `runners/session_context.py` |
+| The worker records a framed message as `source: "session_message"` with a summary, not as the operator's input (`input_event_payload`) | `background/session_messages.py`, `background/worker.py` |
+| `session_message` joins `RUNTIME_NOTICE_SOURCES`, so it stays out of the prompt history and the session title | `subagents/delivery.py` |
+| The agents hub shows it as a `sessions` row, `from <session> (<label>) · <how it begins>` | `tui/workspace/agents_hub/detail.py`, `render.py` |
+
+**Open question, answered.** Only a *background worker* drains the inbox
+(`background/worker.py`; `claim_next` has no other caller), and the inbox accepts
+input only for a session in `ACTIVE_STATUSES` with a live worker. An interactive
+terminal session (`attached`) is not in that set, so **a message reaches background
+and hosted sessions only**. That is why `addressable()` lists live sessions with a
+worker pid and nothing else. A terminal session can send but cannot receive.
+
+Decisions where the shipped code differs from the proposal above:
+
+1. **On by default (decision of 2026-11-28).** The proposal was off by default. The
+   setting is `[sessions] agent_messaging`; `false` removes both tools. The tools change
+   the default tool surface of every session that has background sessions enabled.
+2. **The seam is `session_tools`, not `build_registry`.** Every session already supplies
+   its own tools (`ask_user`, memory, browser) to the foreground turn, the background
+   worker's direct turn, the headless turn and the effective-tools preview through
+   `runners/session_tools.py`, so the messenger's tools join there. No new builtin
+   group and no change to `BUILTIN_GROUPS` was needed.
+3. **Approval is the mode's capability policy.** `message_session` is an `execute`
+   action, so Safe mode asks first and Plan mode **withholds** it (the proposal said
+   Plan would ask). Yolo runs it. `list_sessions` is a read and is never gated. In a
+   background session the question goes to that session's operator inbox.
+4. **Provenance is in the text, not in the inbox schema.** `BackgroundInput` has no
+   sender field and none was added. A fixed header names the sender
+   (`## SESSION MESSAGE (UNTRUSTED CONTEXT)` then `From session <id> (<label>).`, then
+   `Origin chain: …`), and the receiving side parses it. The header is also what keeps a
+   message from being a command: a worker dispatches input that begins with `/` or `$`
+   as a slash command or skill, and a session message always begins with `#`.
+   `reply_to` is a line in the header, not a durable correlation field.
+5. **It uses the strict live path, never the recovering one.** The operator's path
+   (`enqueue_input_or_recover`) starts a new background attempt for a completed,
+   failed or orphaned session. The messenger calls `BackgroundInputInbox.enqueue`,
+   which accepts only the live owner, so an agent cannot revive and pay for finished
+   work by writing to it.
+6. **The origin chain is implemented, with the consequence the acceptance criterion
+   names.** A turn that a session message started, or read, may not message a session
+   already in the chain, so A→B→A is refused at the second hop (`loop`) even though A is
+   alive, and a chain is at most four sessions (`MAX_ORIGIN_CHAIN`). **A session
+   therefore cannot answer in the turn that read a message**; it answers in a turn its
+   operator starts (which clears the chain), or by messaging a session not yet
+   involved. `reply_to` is useful in that case. The per-target limit (8 an hour) stays
+   as the flood bound.
+7. **The sender label is the sender's own title**, read from the store when the
+   message is sent.
+8. **Refusals name the rule:** `unknown_session`, `self_message`, `loop`,
+   `chain_too_long`, `other_project`, `not_live`, `rate_limited`, `inbox_full`,
+   `owner_changed`, `empty_message`, `message_too_long`. A tool refusal reaches the
+   model as `{"ok": false, "error_code": "invalid_argument", "error": "SessionMessageError: <rule>: …"}`.
+
+**Verified.** Unit tests cover the chain (header, forgery, set, extend, clear, ring,
+cap), the setting, the tools' capability classes and the mode policy; every property was
+broken in place to confirm a test fails. An integration test runs **two real session
+runtimes** in one process on one project, each with its own scripted provider: the
+sender lists the other session and sends, the receiver's provider receives the framed
+message with its chain, the receiver's attempt to answer is refused as a `loop` while the
+sender is alive, and a send to a finished session is refused.
+
+**Not done.**
+
+- **A subagent worker is not tested with these tools.** Built-in roles inherit the
+  parent turn's tools under its mode policy (SUBAGENT-12), so they should be offered
+  `message_session` and send as the parent session; no test pins it.
+- **The hosted-runtime path (SUBAGENT-19) was not exercised.**
+- **No receipt is shown to the sender.** The tool returns once the message is queued
+  (`state: accepted`); the sender's agent cannot see when the target read it except by
+  the target's transcript.
+- **No `sender_session_id` or `reply_to` field in the inbox schema** (decision 4).
+
 ## Risks
 
 - A sender that can write to another session's context is a prompt-injection
-  path between sessions. The untrusted framing, the approval, the project-root
-  boundary and the loop limits are the defence; none of them is optional.
-- If interactive terminal sessions do not drain the inbox today, the tool is
-  useful only for background and hosted sessions until they do. The design step
-  must establish this and say so in the tool's `list_sessions` result.
+  path between sessions. The untrusted framing, the live-only rule, the project-root
+  boundary and the limit are the defence; none of them is optional, and the tool
+  must not be offered without an approval step; here the mode's `execute` policy is that step.
+- Because only background and hosted sessions drain the inbox, an agent in a terminal
+  session can send but not receive. The tool's `list_sessions` result already lists
+  only sessions that can receive.

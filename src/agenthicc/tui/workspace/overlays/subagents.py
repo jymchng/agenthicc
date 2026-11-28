@@ -370,6 +370,8 @@ def _event_look(kind: str, ok: bool | None) -> tuple[str, str]:
         "prompt": (g.right, "bold"),
         "tool_started": (g.bullet, p.info),
         "approval_requested": (g.diamond, p.warning),
+        "message_delivered": (g.right, p.info),
+        "message_acknowledged": (g.ok, "dim"),
         "truncated": (g.ellipsis, "dim"),
     }
     return looks.get(kind, (g.info, ""))
@@ -400,6 +402,11 @@ def transcript_lines(events: Sequence[TranscriptEvent], width: int) -> list[str]
             body = f"{event.tool}  {text}".strip()
         elif event.kind == "prompt":
             body = f"task: {text}"
+        elif event.kind == "message_delivered":
+            # ``source`` is the sender; a transcript from before it was recorded has none.
+            body = f"mail from {event.source or 'the pool'}: {text}"
+        elif event.kind == "message_acknowledged":
+            body = f"mail acknowledged · {text[:8]}"
         else:
             body = text
         styled = f"[{style}]{escape(glyph)}[/]" if style else escape(glyph)

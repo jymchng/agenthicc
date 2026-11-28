@@ -63,7 +63,13 @@ def session_context(**fields: object) -> SimpleNamespace:
     carries an empty one unless the test supplies its own.
     """
     context = _stand_in(
-        SessionContext, {"trigger_registry": TriggerManager(), "authored": None, **fields}
+        SessionContext,
+        {
+            "trigger_registry": TriggerManager(),
+            "authored": None,
+            "session_messenger": None,
+            **fields,
+        },
     )
     if "workflow_stack" not in fields:
         supplied_state = fields.get("app_state")

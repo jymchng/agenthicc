@@ -1053,6 +1053,7 @@ class InspectTerminalTool(Tool):
                 "terminal_id": terminal_id,
                 "error": "terminal belongs to another session",
             }
+        manager.observe(terminal_id)
         return record.result()
 
 
@@ -1116,6 +1117,7 @@ class StopTerminalTool(Tool):
         record = manager.get(terminal_id)
         if record is None:
             return {"ok": False, "state": "unknown", "terminal_id": terminal_id}
+        manager.observe(terminal_id)
         result = record.result()
         result["stop_requested"] = stopped
         return result

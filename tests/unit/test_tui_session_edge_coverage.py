@@ -69,26 +69,29 @@ def test_session_helpers_project_terminal_usage_and_event_publication(
 
     redraws: list[bool] = []
     workspace._redraw = lambda: redraws.append(True)
-    ctx.terminal_manager = SimpleNamespace(
-        wait_snapshot=lambda: None, list_records=lambda: [], foreground_commands=lambda: []
-    )
+
+    def terminal_manager(**fields: object) -> SimpleNamespace:
+        """The part of the real ``TerminalManager`` the session reads, with no terminals."""
+        base: dict[str, object] = {
+            "wait_snapshot": lambda: None,
+            "list_records": lambda: [],
+            "foreground_commands": lambda: [],
+            "unannounced_finished": lambda: [],
+        }
+        return SimpleNamespace(**{**base, **fields})
+
+    ctx.terminal_manager = terminal_manager()
     session._sync_terminal_status()
     assert redraws
     # A command a tool call waits on is projected for the Ctrl+B hint, and clears.
     command = SimpleNamespace(handle_id="fg-1")
-    ctx.terminal_manager = SimpleNamespace(
-        wait_snapshot=lambda: None, list_records=lambda: [], foreground_commands=lambda: [command]
-    )
+    ctx.terminal_manager = terminal_manager(foreground_commands=lambda: [command])
     session._sync_terminal_status()
     assert ctx.app_state.conversation.foreground_commands() == frozenset({"fg-1"})
-    ctx.terminal_manager = SimpleNamespace(
-        wait_snapshot=lambda: None, list_records=lambda: [], foreground_commands=lambda: []
-    )
+    ctx.terminal_manager = terminal_manager()
     session._sync_terminal_status()
     assert ctx.app_state.conversation.foreground_commands() == frozenset()
-    ctx.terminal_manager = SimpleNamespace(
-        list_records=lambda: [],
-        foreground_commands=lambda: [],
+    ctx.terminal_manager = terminal_manager(
         wait_snapshot=lambda: {
             "terminal_id": "term-1",
             "label": "test",

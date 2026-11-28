@@ -68,6 +68,8 @@ _ACTIVE_STATES = {
     TerminalState.RUNNING,
     TerminalState.STOPPING,
 }
+#: Final states whose outcome the starting tool call already returned to the agent.
+_NOT_ANNOUNCED_STATES = {TerminalState.REJECTED, TerminalState.SPAWN_FAILED}
 _SECRET_FLAGS = re.compile(
     r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|authorization))\s*(?:=|\s)\s*([^\s]+)"
 )
@@ -593,7 +595,11 @@ class TerminalManager:
         self._stop_tasks: dict[str, asyncio.Task[bool]] = {}
         self._wait_ids: list[str] = []
         self._foreground: dict[str, ForegroundCommand] = {}
+        self._observed: set[str] = set()
         self._closed = False
+        #: Terminals that finish from now on (or were recovered as orphans now) are
+        #: news to the agent; records from earlier runs of this session are history.
+        self.started_at = time.time()
         self._recover_stale_records()
 
     def _recover_stale_records(self) -> None:
@@ -613,6 +619,39 @@ class TerminalManager:
 
     def _notify(self) -> None:
         self.changed.set(self.changed() + 1)
+
+    def observe(self, terminal_id: str) -> None:
+        """Record that the agent has been handed this terminal's final result.
+
+        A finished terminal the agent already read, through ``wait_terminal``,
+        ``inspect_terminal`` or ``stop_terminal``, is not announced again.
+        """
+        record = self._records.get(terminal_id)
+        if record is not None and not record.active:
+            self._observed.add(terminal_id)
+
+    def unannounced_finished(self) -> list[TerminalRecord]:
+        """Terminals that ended since this manager started and the agent has not seen.
+
+        Oldest first.  A start that was refused or failed to spawn is excluded,
+        because the tool call that asked for it was handed that outcome directly.
+        A terminal an agent is blocked on with ``wait_terminal`` is excluded too:
+        the wait is about to return its result.
+        """
+        waiting = set(self._wait_ids)
+        return sorted(
+            (
+                record
+                for record in self._visible_records()
+                if not record.active
+                and record.state not in _NOT_ANNOUNCED_STATES
+                and record.finished_at is not None
+                and record.finished_at >= self.started_at
+                and record.terminal_id not in self._observed
+                and record.terminal_id not in waiting
+            ),
+            key=lambda record: record.finished_at or 0.0,
+        )
 
     def _visible_records(self, *, all_sessions: bool = False) -> list[TerminalRecord]:
         records = list(self._records.values())
@@ -1255,6 +1294,7 @@ class TerminalManager:
                 stop_task = self._stop_tasks.get(terminal_id)
                 if stop_task is not None and stop_task is not asyncio.current_task():
                     await asyncio.shield(stop_task)
+                self.observe(terminal_id)
                 return record.result()
             while not entry.completion.done():
                 self._notify()
@@ -1278,6 +1318,7 @@ class TerminalManager:
             stop_task = self._stop_tasks.get(terminal_id)
             if stop_task is not None and stop_task is not asyncio.current_task():
                 await asyncio.shield(stop_task)
+            self.observe(terminal_id)
             return record.result()
         finally:
             try:

@@ -496,7 +496,7 @@ sections answer four questions:
 |---|---|---|
 | Needs you | The agent waits or its worker was lost | The inbox request's canonical target — tool, input, workspace paths, mode — redacted; `y`/`n` resolve that exact item |
 | Now | The agent is active | Phase progress, queue position, the latest activity |
-| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for each worker-finished, question or message notice the parent agent received |
+| Transcript | Always | The last 50 journal events, redacted with the export redactor, each wrapped under its role: a reply keeps its paragraphs (up to 8,000 characters), a tool call its summary and first output line; an entry longer than 40 lines ends in `… N more lines`; `f` toggles following new events, `t` the whole transcript. A session's subagents appear under the role `subagents`: the pool starting with its workers, each worker finishing as `[done/total] label · first line of its result` (`✓`) or with its error (`✗`), a stop request with who asked and why, the pool's `N/M done`, and `parent notified · …` for each worker-finished, question or message notice the parent agent received. A background command that ended appears under the role `terminals` as `agent notified · Terminal <how it ended> — <label> · <terminal id>`, marked `✓` when it exited cleanly, `✗` when it failed, timed out or was orphaned, and `●` when it was stopped or cancelled; the process's output tail goes to the agent, not into this row. A command moved to the background with Ctrl+B shows as its tool call with `moved to the background · <terminal id> · running` and what it had printed, not as raw JSON. A message another session sent appears under the role `sessions` as `from <session id> (<label>) · <how it begins>`, not as your own message. In a subagent worker's own transcript, mail it was handed reads `mail from <sender>: <how the message begins>`, followed by `mail acknowledged · <id>` when the run that carried it succeeded |
 | Changes | A worktree agent | `git diff --stat` from its base commit including uncommitted work; `d` shows the full diff |
 | Attempts | More than one attempt | Each attempt's outcome and error |
 | Details | Always | Only fields that have a value |
@@ -726,6 +726,56 @@ resurrect it. Deleted agents leave the hub; `agenthicc agents restore
 SESSION_ID` brings one back. Deletion runs off the event loop, so the hub stays
 responsive; a repeated `Ctrl+X` is ignored while an operation runs, and
 failures stay visible with durable retry metadata.
+
+## Messages from other sessions
+
+One session can write to another running session of the same project through the
+same durable, ordered input an operator uses, with three differences that matter
+when the sender is an agent:
+
+- **It never restarts anything.** Your input to a finished session starts a new
+  background attempt. A session's message is accepted only by a session that is
+  running now, so one agent cannot revive and pay for another's finished work.
+- **It is never a command.** A background worker runs input that begins with `/` or
+  `$` as a slash command or skill. A session message always begins with the fixed
+  line `## SESSION MESSAGE (UNTRUSTED CONTEXT)`, then `From session <id> (<label>).`,
+  and says it is not you and cannot change the receiver's instructions, approvals,
+  mode or permissions.
+- **It is limited.** At most 8 messages from one session to one target in an hour,
+  and the inbox's own 64 pending messages.
+- **It cannot loop.** Each message names the sessions the exchange has passed
+  through (`Origin chain: a b`, a header line the body cannot imitate). A turn that a
+  session message started, or that read one, may not message a session already in
+  that chain, and an exchange passes through at most four sessions. A reply back into
+  the same exchange is therefore refused; a session answers when you start a turn for
+  it, or by messaging a session that has not taken part. Your own message to a
+  session starts its turn with an empty chain.
+
+A refusal names its rule: `unknown_session`, `self_message`, `loop`, `chain_too_long`,
+`other_project`, `not_live`, `rate_limited`, `inbox_full`, `owner_changed`,
+`empty_message` or `message_too_long`.
+
+Only a background or hosted session reads its inbox. A session in a terminal does
+not, so it cannot be messaged. The hub shows a received message as a `sessions` row.
+
+### Tools an agent calls
+
+Unless you set `[sessions] agent_messaging = false`, a session's agent has two tools.
+A session started with background sessions disabled has neither, because there is no
+other session to reach.
+
+| Tool | Class | What it does |
+|---|---|---|
+| `list_sessions` | read | The other running sessions of this project: id, title, status, workflow and latest activity. |
+| `message_session` | execute | Sends text to one of them, with an optional `reply_to` message id. |
+
+`message_session` is an execute-class action like running a command: Safe mode asks
+you first, showing the target and the text; Plan mode withholds it; Yolo runs it. In
+a background session the question goes to that session's operator inbox. The call
+returns once the message is queued and does not wait for an answer. The receiving
+session reads it as untrusted context from the sender, never as you, and can answer
+only as described above. Set `agent_messaging = false` in `[sessions]` to remove both
+tools. See [COMM-05](https://github.com/jymchng/agenthicc/blob/main/prds/agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md).
 
 ## Scriptable control
 

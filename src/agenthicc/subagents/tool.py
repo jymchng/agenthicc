@@ -38,6 +38,7 @@ from agenthicc.subagents.communication import (
     make_parent_communication_tools,
     registry_for_session,
 )
+from agenthicc.subagents.directory import PoolDirectory
 from agenthicc.subagents.spawn_mode import SpawnMode, background_receipt_text, current_spawn_mode
 from agenthicc.subagents.policy import SubagentExecutionPolicy
 from agenthicc.tools.surface import ToolSurface
@@ -836,6 +837,8 @@ def make_spawn_subagents_tool(
                     phase_owner=pool.phase_owner,
                 )
             )
+            # Its workers can now reach the workers of related pools (COMM-04).
+            communication.directory = PoolDirectory(continuation_registry, conversation_id)
         foreground = mode == "foreground"
         pending_task = (
             asyncio.create_task(communication.wait_for_pending())

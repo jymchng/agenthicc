@@ -625,10 +625,38 @@ def summarize_call(
 # ── output projection ─────────────────────────────────────────────────────────
 
 
+def _background_receipt_text(result: Mapping[str, object]) -> str | None:
+    """What a command that now runs in the background shows, instead of its JSON.
+
+    A receipt names the terminal and its state, then the output so far.  A finished
+    terminal's own result (``wait_terminal``, ``inspect_terminal``) has ``stdout``
+    and is shown as output, so it is not matched here.
+    """
+    terminal_id = result.get("terminal_id")
+    if (
+        result.get("background") is not True
+        or not isinstance(terminal_id, str)
+        or "stdout" in result
+        or "stderr" in result
+    ):
+        return None
+    verb = "moved to the background" if result.get("backgrounded") is True else "started"
+    head = f"{verb} · {terminal_id} · {result.get('state') or 'running'}"
+    seen = [
+        text.rstrip("\n")
+        for text in (result.get("stdout_so_far"), result.get("stderr_so_far"))
+        if isinstance(text, str) and text.strip()
+    ]
+    return "\n".join([head, *seen])
+
+
 def _output_text(result: object) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, Mapping):
+        receipt = _background_receipt_text(result)
+        if receipt is not None:
+            return receipt
         stdout = result.get("stdout")
         stderr = result.get("stderr")
         if isinstance(stdout, str) or isinstance(stderr, str):
