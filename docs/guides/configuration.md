@@ -360,6 +360,20 @@ requests immediate cancellation. See the
 [subagent guide](subagents.md#concurrency-timeout-and-failure-semantics) for
 partial-result, retry, and reporting behavior.
 
+## Sessions
+
+```toml
+[sessions]
+agent_messaging = true   # the default
+```
+
+`agent_messaging` offers the agent `list_sessions` and `message_session`, which
+reach the other running background sessions of the same project. It is on by
+default. `message_session` asks first in Safe mode and is withheld in Plan mode, and
+a receiving session reads the message as untrusted context; set it to `false` to
+remove both tools. They also require background sessions to be enabled
+(`[background] enabled`). See [background sessions](background-sessions.md#messages-from-other-sessions).
+
 ## Tools and MCP
 
 Model-requested commands (`run_bash`, `run_command`, `run_python`,

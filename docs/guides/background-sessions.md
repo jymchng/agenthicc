@@ -742,17 +742,40 @@ when the sender is an agent:
   and says it is not you and cannot change the receiver's instructions, approvals,
   mode or permissions.
 - **It is limited.** At most 8 messages from one session to one target in an hour,
-  and the inbox's own 64 pending messages. A refusal names its rule: `unknown_session`,
-  `self_message`, `other_project`, `not_live`, `rate_limited`, `inbox_full`,
-  `owner_changed`, `empty_message` or `message_too_long`.
+  and the inbox's own 64 pending messages.
+- **It cannot loop.** Each message names the sessions the exchange has passed
+  through (`Origin chain: a b`, a header line the body cannot imitate). A turn that a
+  session message started, or that read one, may not message a session already in
+  that chain, and an exchange passes through at most four sessions. A reply back into
+  the same exchange is therefore refused; a session answers when you start a turn for
+  it, or by messaging a session that has not taken part. Your own message to a
+  session starts its turn with an empty chain.
+
+A refusal names its rule: `unknown_session`, `self_message`, `loop`, `chain_too_long`,
+`other_project`, `not_live`, `rate_limited`, `inbox_full`, `owner_changed`,
+`empty_message` or `message_too_long`.
 
 Only a background or hosted session reads its inbox. A session in a terminal does
 not, so it cannot be messaged. The hub shows a received message as a `sessions` row.
 
-**No agent can send one yet.** The messenger (`SessionMessenger`) and the receiving
-side exist and are tested, but no tool is registered that lets an agent call it:
-adding one changes every session's tool surface and is a decision for
-[COMM-05](https://github.com/jymchng/agenthicc/blob/main/prds/agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md).
+### Tools an agent calls
+
+Unless you set `[sessions] agent_messaging = false`, a session's agent has two tools.
+A session started with background sessions disabled has neither, because there is no
+other session to reach.
+
+| Tool | Class | What it does |
+|---|---|---|
+| `list_sessions` | read | The other running sessions of this project: id, title, status, workflow and latest activity. |
+| `message_session` | execute | Sends text to one of them, with an optional `reply_to` message id. |
+
+`message_session` is an execute-class action like running a command: Safe mode asks
+you first, showing the target and the text; Plan mode withholds it; Yolo runs it. In
+a background session the question goes to that session's operator inbox. The call
+returns once the message is queued and does not wait for an answer. The receiving
+session reads it as untrusted context from the sender, never as you, and can answer
+only as described above. Set `agent_messaging = false` in `[sessions]` to remove both
+tools. See [COMM-05](https://github.com/jymchng/agenthicc/blob/main/prds/agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md).
 
 ## Scriptable control
 

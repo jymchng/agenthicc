@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — agents message across pools and sessions (COMM-04, COMM-05)
+
+- A subagent can message a worker of a related pool (a sibling, an ancestor or a
+  descendant pool of the same conversation) with `send_peer_message("pool/worker", …)`,
+  and `list_reachable_workers` returns the addresses. Refusals name their rule.
+- Every session's agent is now offered `list_sessions` and `message_session`, which
+  reach the other running background sessions of the project. **This changes the
+  default tool surface.** `message_session` asks first in Safe mode and is withheld in
+  Plan mode; a message never starts a finished session, is read by the receiver as
+  untrusted context, and cannot loop (an origin chain, capped at four sessions).
+  Set `[sessions] agent_messaging = false` to remove both tools.
+
 ### Changed — non-blocking subagents (SUBAGENT-16)
 
 - **Breaking.** Direct terminal turns spawn in the background by default.

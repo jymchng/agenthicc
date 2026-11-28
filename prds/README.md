@@ -234,7 +234,7 @@ audit names the source that proves it.
 - [COMM-02 — Tell the agent when a background terminal finishes (implemented)](agent-comms-nov/COMM-02-background-terminal-completion-notices.md)
 - [COMM-03 — Deliver parent and peer mail to a worker at a tool boundary (implemented)](agent-comms-nov/COMM-03-tool-boundary-delivery-to-workers.md)
 - [COMM-04 — Address workers across pools and nesting levels (implemented)](agent-comms-nov/COMM-04-cross-pool-and-nested-worker-addressing.md)
-- [COMM-05 — Let an agent message another agenthicc session (partly implemented: messenger and receiving side; no agent tool yet)](agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md)
+- [COMM-05 — Let an agent message another agenthicc session (implemented; on by default)](agent-comms-nov/COMM-05-model-facing-inter-session-messaging.md)
 
 ### TOOLR series — tool robustness and effectiveness
 

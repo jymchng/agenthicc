@@ -3176,6 +3176,32 @@ JSON-safe result for one workflow execution. `to_dict()` returns the stable
 
 ## Durable session ownership — `agenthicc.runners.session_lease`
 
+### SessionMessenger
+
+```python
+class SessionMessenger:
+    def __init__(self, store: BackgroundStore, sender_session_id: str, *,
+                 project_root: str | Path, sender_label: str = "",
+                 per_target_limit: int = 8, window_s: float = 3600.0,
+                 clock: Callable[[], float] = time.time) -> None: ...
+    @property
+    def origin_chain(self) -> tuple[str, ...]: ...
+    def note_input(self, text: str, *, starts_turn: bool) -> None: ...
+    def addressable(self) -> list[dict[str, object]]: ...
+    def send(self, session_id: str, text: str, *, reply_to: str = "") -> dict[str, object]: ...
+```
+
+One session writing to another running session of its project through the durable,
+owner-fenced background input inbox (`agenthicc.background.session_messages`). The
+receiver reads a fixed `## SESSION MESSAGE (UNTRUSTED CONTEXT)` header naming the
+sender and the exchange's origin chain, then the body. `send` never starts a finished
+session and raises `SessionMessageError` naming the refusing rule: `unknown_session`,
+`self_message`, `loop`, `chain_too_long`, `other_project`, `not_live`, `rate_limited`,
+`inbox_full`, `owner_changed`, `empty_message` or `message_too_long`. The worker calls
+`note_input` for every input it delivers so a turn started by a session message cannot
+message back into its exchange. Agents reach it through the `list_sessions` and
+`message_session` tools.
+
 ### SessionOwnerLease
 
 ```python
@@ -4649,6 +4675,7 @@ class AgenthiccConfig:
     loops: LoopSettings
     ui: UISettings
     subagents: SubagentSettings
+    sessions: SessionSettings
 
     def to_system_settings(self) -> SystemSettings: ...
     def to_security_policy(self) -> SecurityPolicy: ...
@@ -4656,6 +4683,19 @@ class AgenthiccConfig:
                                  strict: bool = True) -> ResolvedProviderProfile | None: ...
     def redacted_dict(self) -> dict[str, object]: ...
 ```
+
+### SessionSettings
+
+```python
+@dataclass
+class SessionSettings:
+    agent_messaging: bool = True
+```
+
+`[sessions]`. When `agent_messaging` is true (the default) a session's agent is
+offered `list_sessions` and `message_session`, which reach the other running
+background sessions of the same project; `false` removes both. They exist only
+where background sessions are enabled. See `docs/guides/background-sessions.md`.
 
 ### SubagentDepthLimit
 
