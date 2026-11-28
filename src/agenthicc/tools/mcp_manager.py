@@ -27,9 +27,10 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, TYPE_CHECKING, cast
+from typing import Any, TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from agenthicc.kernel import Event
+from agenthicc.reactive import Signal
 from agenthicc.supervised_tasks import SupervisedTasks
 from agenthicc.tools.mcp import (
     AgenthiccMcpTool,
@@ -38,7 +39,9 @@ from agenthicc.tools.mcp import (
     McpStaleCatalogError,
     McpToolSchema,
     _provider_safe_tool_name,
+    client_status,
 )
+from agenthicc.tools.mcp_availability import McpUnavailable
 from agenthicc.tools.mcp_server_config import McpServerConfig
 
 if TYPE_CHECKING:
@@ -88,6 +91,17 @@ def _thaw_value(value: object) -> object:
     return copy.deepcopy(value)
 
 
+@runtime_checkable
+class _AttentionStore(Protocol):
+    """The part of the TUI conversation store the manager writes (MCP-01 status badge).
+
+    A structural type, so ``tools`` does not import the TUI. A store without the signal (a
+    test double, a headless adapter) is simply not fed.
+    """
+
+    mcp_attention: Signal[int]
+
+
 class McpServerState(StrEnum):
     """Observable lifecycle states for one configured MCP server."""
 
@@ -119,6 +133,16 @@ class McpServerStatus:
     last_success_at: float | None = None
     auth_state: str = "not_required"
     generation_id: int = 0
+    #: Why the server could not start when the MCP client library is the cause
+    #: (``dependency_missing``, ``dependency_incompatible``, ``dependency_broken``); else ``""``.
+    reason: str = ""
+    #: The command that fixes ``reason``; ``""`` when there is nothing to fix.
+    fix: str = ""
+
+    @property
+    def client_available(self) -> bool:
+        """False while the MCP client library is the reason this server is not running."""
+        return not self.reason.startswith("dependency_")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -132,6 +156,9 @@ class McpServerStatus:
             "last_success_at": self.last_success_at,
             "auth_state": self.auth_state,
             "generation_id": self.generation_id,
+            "client_available": self.client_available,
+            "reason": self.reason,
+            "fix": self.fix,
         }
 
 
@@ -282,6 +309,9 @@ class McpSessionManager:
         self._closed = False
         self._required_failures: dict[str, str] = {}
         self._registration_errors: dict[str, str] = {}
+        #: ``(generation, required)`` pairs for which the "MCP client unavailable" notice has
+        #: already been written, so one cause is reported once per startup (MCP-01).
+        self._client_notices: set[tuple[int, bool]] = set()
         self._generation_id = 0
         for config in configs:
             self.register_server(config)
@@ -344,6 +374,7 @@ class McpSessionManager:
                     transport=config.normalized_transport,
                     auth_state="not_required",
                 )
+                self._sync_attention()
                 return
             self._registration_errors[config.name] = error
             self._statuses[config.name] = McpServerStatus(
@@ -355,6 +386,7 @@ class McpSessionManager:
             )
             if config.required:
                 self._required_failures[config.name] = error
+            self._sync_attention()
             return
         self._configs[config.name] = config
         self._bridges[config.name] = self._bridge_factory(config, self._events)
@@ -374,6 +406,7 @@ class McpSessionManager:
                 )
             ),
         )
+        self._sync_attention()
 
     async def start_all(self, *, raise_required: bool = True) -> list[AgenthiccMcpTool]:
         """Start all eligible servers concurrently and return visible tools."""
@@ -456,6 +489,8 @@ class McpSessionManager:
                 name,
                 state=McpServerState.STARTING,
                 last_error=None,
+                reason="",
+                fix="",
                 started_at=started_at,
                 auth_state=auth_state,
                 generation_id=generation_id,
@@ -493,6 +528,8 @@ class McpSessionManager:
                     catalog_revision=snapshot.revision,
                     last_success_at=now,
                     last_error=None,
+                    reason="",
+                    fix="",
                     auth_state="authenticated" if auth_state == "authenticated" else auth_state,
                     generation_id=generation_id,
                 )
@@ -517,20 +554,33 @@ class McpSessionManager:
                     )
                 raise
             except Exception as exc:  # noqa: BLE001
-                error = self._redact(self._bridge_error(bridge, str(exc)), config)
+                # A missing or unusable client library is the same cause for every server and
+                # has a fix; it is never an authentication failure, whatever its text says.
+                unavailable = exc.status if isinstance(exc, McpUnavailable) else None
+                error = (
+                    unavailable.summary()
+                    if unavailable is not None
+                    else self._redact(self._bridge_error(bridge, str(exc)), config)
+                )
                 try:
                     await bridge.disconnect()
                 except Exception:  # noqa: BLE001
                     pass
                 state = (
-                    McpServerState.NEEDS_AUTH if _is_auth_error(error) else McpServerState.FAILED
+                    McpServerState.NEEDS_AUTH
+                    if unavailable is None and _is_auth_error(error)
+                    else McpServerState.FAILED
                 )
                 if not self._is_current_generation(generation_id):
                     return []
+                reason = unavailable.reason if unavailable is not None else ""
+                fix = unavailable.fix if unavailable is not None else ""
                 self._set_status(
                     name,
                     state=state,
                     last_error=error,
+                    reason=reason,
+                    fix=fix,
                     generation_id=generation_id,
                 )
                 self._record_failure(name, error, generation_id=generation_id)
@@ -543,6 +593,8 @@ class McpSessionManager:
                         "required": config.required,
                         "status": "failed_required" if config.required else "failed_optional",
                         "error": error,
+                        "reason": reason,
+                        "fix": fix,
                     },
                 )
                 log.warning("MCP server %r failed to start: %s", name, error)
@@ -868,6 +920,14 @@ class McpSessionManager:
             results.append(item)
         return results
 
+    async def diagnostics(self, name: str | None = None) -> dict[str, object]:
+        """The client check, then the per-server report: what ``mcp doctor`` prints (MCP-01).
+
+        ``client`` says whether the MCP client library can be used and, when it cannot, the
+        cause and the exact command that fixes it; ``servers`` is :meth:`doctor`.
+        """
+        return {"client": client_status().to_dict(), "servers": await self.doctor(name)}
+
     def _publish(
         self,
         name: str,
@@ -1025,53 +1085,56 @@ class McpSessionManager:
 
             callback(_changed)
 
+    def _failure_notice(self, payload: Mapping[str, object]) -> dict[str, object] | None:
+        """The transcript notice for one failed server, or ``None`` when it would repeat.
+
+        A server fails for its own reasons, so each gets its own line. A missing or unusable
+        MCP client library is one cause for every server and has one fix, so it is reported
+        once per startup generation (twice at most: a required server raises the warning to an
+        error) and names the cause on the same line (MCP-01).
+        """
+        required = bool(payload.get("required", False))
+        generation = payload.get("generation_id", 0)
+        reason = payload.get("reason", "")
+        notice: dict[str, object] = {
+            "server": payload.get("server", ""),
+            "generation_id": generation,
+            "event_id": payload.get("event_id", ""),
+            "required": required,
+            "reason": reason,
+        }
+        if isinstance(reason, str) and reason.startswith("dependency_"):
+            key = (generation if isinstance(generation, int) else 0, required)
+            if key in self._client_notices:
+                return None
+            self._client_notices.add(key)
+            consequence = (
+                "Startup cannot continue." if required else "Continuing without MCP tools."
+            )
+            notice["text"] = f"MCP is unavailable: {payload.get('error', '')}. {consequence}"
+            notice["body"] = f"Fix: {payload.get('fix', '')}\nDetails: /mcp doctor"
+            return notice
+        notice["text"] = f"MCP server {payload.get('server', '')!r} is unavailable; " + (
+            "startup cannot continue." if required else "continuing without its tools."
+        )
+        return notice
+
     async def _emit(self, event_type: str, payload: dict[str, object]) -> None:
         if event_type == "McpServerFailed":
             append_event = getattr(self._conversation_store, "append_event", None)
-            if callable(append_event):
+            notice = self._failure_notice(payload)
+            if callable(append_event) and notice is not None:
+                event_id = payload.get("event_id")
                 try:
                     append_event(
                         "mcp_server_failure",
-                        {
-                            "server": payload.get("server", ""),
-                            "generation_id": payload.get("generation_id", 0),
-                            "event_id": payload.get("event_id", ""),
-                            "required": bool(payload.get("required", False)),
-                            "text": (
-                                f"MCP server {payload.get('server', '')!r} is unavailable; "
-                                + (
-                                    "startup cannot continue."
-                                    if bool(payload.get("required", False))
-                                    else "continuing without its tools."
-                                )
-                            ),
-                        },
-                        event_id=(
-                            payload.get("event_id")
-                            if isinstance(payload.get("event_id"), str)
-                            else None
-                        ),
+                        notice,
+                        event_id=event_id if isinstance(event_id, str) else None,
                     )
                 except TypeError:
                     # Compatibility with pre-PRD-191 conversation-store
                     # adapters that do not accept the event_id keyword.
-                    append_event(
-                        "mcp_server_failure",
-                        {
-                            "server": payload.get("server", ""),
-                            "generation_id": payload.get("generation_id", 0),
-                            "event_id": payload.get("event_id", ""),
-                            "required": bool(payload.get("required", False)),
-                            "text": (
-                                f"MCP server {payload.get('server', '')!r} is unavailable; "
-                                + (
-                                    "startup cannot continue."
-                                    if bool(payload.get("required", False))
-                                    else "continuing without its tools."
-                                )
-                            ),
-                        },
-                    )
+                    append_event("mcp_server_failure", notice)
         if self._events is None:
             return
         await self._events.emit(Event.create(event_type, payload))
@@ -1122,6 +1185,26 @@ class McpSessionManager:
         # in mypy, while this helper is intentionally the single dynamic
         # update boundary for the frozen status record.
         self._statuses[name] = replace(current, **cast(Any, changes))
+        self._sync_attention()
+
+    def _sync_attention(self) -> None:
+        """Publish how many enabled servers are failed or need sign-in (MCP-01 status badge).
+
+        The count is the whole picture every time, so it cannot drift from the statuses. A
+        session without a conversation store, or one whose store has no such signal, has no
+        status line to feed.
+        """
+        store = self._conversation_store
+        if not isinstance(store, _AttentionStore):
+            return
+        attention = {McpServerState.FAILED, McpServerState.NEEDS_AUTH}
+        store.mcp_attention.set(
+            sum(
+                1
+                for name, status in self._statuses.items()
+                if self._configs[name].enabled and status.state in attention
+            )
+        )
 
     def _require_config(self, name: str) -> McpServerConfig:
         try:

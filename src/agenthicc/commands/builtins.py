@@ -734,7 +734,7 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
             elif action == "reload":
                 await manager.reload_all()
             else:
-                result = await manager.doctor(name)
+                result = await manager.diagnostics(name)
                 ctx.console.print(json.dumps(result, sort_keys=True, indent=2), markup=False)
                 return
             ctx.console.print(

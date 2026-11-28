@@ -196,6 +196,27 @@ def test_a_required_mcp_failure_is_an_error_and_an_optional_one_a_warning() -> N
     assert severities == ["error", "warning"]
 
 
+def test_an_unavailable_mcp_client_notice_shows_its_cause_and_its_fix() -> None:
+    """MCP-01: the cause is on the title line and the exact fix is in the body."""
+    console = _RecordingConsole()
+    appender = ScrollBufferAppender(AppState.create(), console)
+    appender._render_one(
+        ConversationEvent(
+            "m",
+            "mcp_server_failure",
+            {
+                "required": False,
+                "text": "MCP is unavailable: lauren-mcp is not installed. Continuing without MCP tools.",
+                "body": "Fix: python -m pip install 'lauren-mcp[http,ws]>=1.2.1,<2'\nDetails: /mcp doctor",
+            },
+        )
+    )
+    lines = console.export_text().splitlines()
+    assert any("lauren-mcp is not installed" in line for line in lines)
+    assert any("Fix: python -m pip install" in line for line in lines)
+    assert any("/mcp doctor" in line for line in lines)
+
+
 def test_screen_reader_mode_spells_severities_and_keeps_announcements_literal() -> None:
     state = AppState.create()
     state.ui.set(replace(UISettings(), screen_reader=True))

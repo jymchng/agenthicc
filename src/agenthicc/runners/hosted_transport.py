@@ -15,12 +15,27 @@ from agenthicc.runners.process_lease import atomic_replace, read_json_object
 
 LOOPBACK = "127.0.0.1"
 MAX_FRAME_BYTES = 512 * 1024
-HANDSHAKE_TIMEOUT = 5.0
+#: Seconds a peer has to answer the authentication handshake. A runtime that is still
+#: importing and building its session answers late on a busy host; 5 s was too tight.
+HANDSHAKE_TIMEOUT = 15.0
+#: While a runtime builds its session, a connected controller hears ``starting`` this often.
+STARTING_INTERVAL_S = 2.0
+#: How long a controller waits in silence for a runtime that is starting. This bounds
+#: *silence*, not the build: a runtime that is working says so every STARTING_INTERVAL_S.
+STARTUP_SILENCE_TIMEOUT_S = 30.0
+#: How long the launcher waits for a new runtime process to publish its controller endpoint.
+LAUNCH_TIMEOUT_S = 60.0
+#: How long a ready runtime waits for its first controller before it closes itself.
+INITIAL_CONTROLLER_WINDOW_S = 20.0
 _HEX_TOKEN = re.compile("[0-9a-f]{64}")
 
 
 class ControllerProtocolError(ValueError):
     """A peer sent an invalid or unauthenticated controller frame."""
+
+
+class HostedStartupError(RuntimeError):
+    """A hosted session runtime did not become usable; the message says which step and why."""
 
 
 class LocalControllerUnavailable(OSError):

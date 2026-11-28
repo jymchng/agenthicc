@@ -262,6 +262,6 @@ async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
     assert "".join(chunk.delta for chunk in chunks) == "done"
     bridge.call_tool.assert_awaited_once()
     call_args = bridge.call_tool.await_args
+    # The MCP client's ``call_tool(name, arguments)`` takes no call id (MCP-01).
     assert call_args.args == ("ping", {"value": "hello"})
-    assert isinstance(call_args.kwargs.get("tool_call_id"), str)
-    assert call_args.kwargs["tool_call_id"]
+    assert call_args.kwargs == {}

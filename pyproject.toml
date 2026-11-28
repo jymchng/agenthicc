@@ -20,6 +20,11 @@ dependencies = [
     "httpx>=0.27",
     "aiohttp>=3.9",
     "jsonschema>=4.23,<5",
+    # MCP-01: the MCP client is part of every install. 1.2.0 added the stdio ``cwd`` and
+    # ``env`` arguments the launcher relies on; 1.2.1 is the first release this project
+    # locks. ``agenthicc.tools.mcp_availability.REQUIREMENT`` repeats this string, and a
+    # test keeps the two equal.
+    "lauren-mcp[http,ws]>=1.2.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -27,10 +32,6 @@ cloud = ["keyring>=25.0"]
 book = ["Pillow>=10"]
 cloakbrowser = ["cloakbrowser==0.5.3"]
 playwright = ["playwright>=1.52,<2"]
-mcp = [
-    "lauren-ai[mcp]>=1.6.1,<2",
-    "lauren-mcp[http,ws]>=1.1.0,<2",
-]
 # The one development set: every tool a Nox session or CI job calls.
 dev = [
     "pytest>=8.0",
@@ -140,7 +141,6 @@ warn_unused_ignores = true
 module = [
     "agenthicc.tools.fs.pyodide",
     "agenthicc.tools.fs.s3",
-    "agenthicc.tools.mcp",
     "agenthicc.tools.outlook",
     "agenthicc.tools.outlook.*",
     # The bundled make_book reference is intentionally kept byte-for-byte

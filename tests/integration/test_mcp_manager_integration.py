@@ -23,7 +23,7 @@ class InProcessMcpServer:
         self.is_connected = False
         self.tools = [McpToolSchema("echo", "Echo", {"type": "object"})]
         self.callback = None
-        self.calls: list[tuple[str, dict[str, object], str]] = []
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
     async def connect(self) -> None:
         self.is_connected = True
@@ -43,10 +43,8 @@ class InProcessMcpServer:
     def set_change_callback(self, callback: object) -> None:
         self.callback = callback
 
-    async def call_tool(
-        self, name: str, arguments: dict[str, object], *, tool_call_id: str = ""
-    ) -> dict[str, object]:
-        self.calls.append((name, dict(arguments), tool_call_id))
+    async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        self.calls.append((name, dict(arguments)))
         return {"echo": arguments}
 
 
@@ -70,7 +68,7 @@ async def test_shared_manager_exposes_one_catalog_and_executes_mcp_tool() -> Non
 
     result = await tool.execute({"value": "hello"}, {"tool_call_id": "call-1"})
     assert result == {"echo": {"value": "hello"}}
-    assert servers["demo"].calls == [("echo", {"value": "hello"}, "call-1")]
+    assert servers["demo"].calls == [("echo", {"value": "hello"})]
     assert manager.status("demo")["status"] == McpServerState.READY.value
     assert manager.instructions()[0]["server"] == "demo"
     await manager.shutdown()

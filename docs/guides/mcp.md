@@ -2,25 +2,29 @@
 
 AgentHICC can discover tools from Model Context Protocol (MCP) servers and
 make them available to normal chat, Plan mode, workflows, subagents, and
-headless runs. MCP support is optional; install it only when the project uses
-an MCP server.
+headless runs.
 
-## Install MCP support
+## The MCP client is part of every install
 
-For an installed AgentHICC package:
+The MCP client (`lauren-mcp` with its HTTP, SSE, and WebSocket transports) is a
+base dependency of AgentHICC, so installing AgentHICC installs it. There is no
+extra to add, and nothing imports it until a server is configured.
 
-```bash
-uv pip install 'agenthicc[mcp]'
+An environment can still lack it, for example one installed before MCP became a
+base dependency. AgentHICC then says so, once, with the cause and the command
+that fixes it for the interpreter that is running AgentHICC:
+
+```text
+MCP is unavailable: lauren-mcp is not installed. Continuing without MCP tools.
+Fix: /path/to/python -m pip install 'lauren-mcp[http,ws]>=1.2.1,<2'
+     (or: uv pip install --python /path/to/python 'lauren-mcp[http,ws]>=1.2.1,<2')
 ```
 
-For an AgentHICC checkout:
-
-```bash
-uv sync --extra mcp
-```
-
-The extra provides the MCP client and the HTTP, SSE, and WebSocket transport
-adapters. The base installation remains usable without it.
+`agenthicc mcp doctor` checks the client first and **exits non-zero** when it
+is missing, broken, or older than the supported release. `agenthicc mcp list
+--json` and `/mcp status` carry `client_available`, `reason`, and `fix`. While an
+enabled server is `failed` or `needs_auth`, the status line shows `mcp ✗`. A
+server with `required = true` stops startup when the client is unusable.
 
 ## Add a local stdio server
 
@@ -173,8 +177,9 @@ disabled_tools = ["delete_document"]
 Use `agenthicc mcp doctor NAME --json` for machine-readable diagnostics. An
 optional server failure is surfaced without preventing healthy MCP servers
 from loading; set `required = true` when startup must fail if that server
-cannot connect. Check network policy for remote URLs and ensure the MCP extra
-is installed in the same environment that runs `agenthicc`.
+cannot connect. Check network policy for remote URLs. If `mcp doctor` reports
+that the client is missing, run the command it prints: it targets the
+interpreter that runs `agenthicc`.
 
 ### Startup generations and failure isolation
 
@@ -236,6 +241,8 @@ usage: agenthicc mcp add [-h] [--global] [--project] [--transport TRANSPORT]
 | A server connects immediately when you did not want it to | Auto-connect is on by default | Pass `--no-auto-connect` and drive the lifecycle with `mcp connect`/`mcp disconnect` |
 | Session start is delayed by every configured server | Optional connections are started in the background, but a declared required dependency is awaited | Make the dependency optional, or accept the wait; required resources keep fail-closed semantics |
 | `agenthicc doctor` is not a command | Diagnostics are subcommand-scoped | Use `mcp doctor [NAME]`, not a top-level `doctor` |
+| `MCP is unavailable: lauren-mcp is not installed` | The MCP client is missing from the environment running `agenthicc` (not a server problem) | Run the `Fix:` command from the notice or from `agenthicc mcp doctor`; it names the running interpreter |
+| `mcp ✗` in the status line | An enabled server is `failed` or `needs_auth` | `/mcp` shows which, and `mcp doctor` says why |
 | A previously working server fails after an upgrade | Transport alias or dependency drift | `mcp doctor --json` first, then `mcp refresh`, then `mcp logout`/`mcp auth` if the credential expired |
 
 ### The transport-alias trap
