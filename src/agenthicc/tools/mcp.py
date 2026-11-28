@@ -11,13 +11,16 @@ import time
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 if TYPE_CHECKING:
+    from lauren_mcp import McpClientProtocol
+
     from agenthicc.kernel.processor import EventProcessor
 
 from agenthicc.tools.base import Tool
+from agenthicc.tools.mcp_availability import McpClientStatus, McpUnavailable, check_mcp_client
 from agenthicc.tools.mcp_content import provider_safe_schema, tool_result
 from agenthicc.tools.mcp_server_config import McpServerConfig
 from agenthicc.kernel import Event
@@ -61,17 +64,23 @@ def _mutable_json_copy(value: object) -> object:
 
 
 # ---------------------------------------------------------------------------
-# Optional lauren_mcp import guard (G7)
+# lauren_mcp import guard (MCP-01)
+#
+# The client is a base dependency, but an environment can still lack it or hold one that
+# fails to import. The guard keeps the rest of agenthicc importable and lets
+# ``McpToolBridge.connect`` raise ``McpUnavailable`` with the cause and the fix instead of
+# crashing the session.
 # ---------------------------------------------------------------------------
 try:
+    from lauren_mcp import McpCallError as _McpCallError
     from lauren_mcp import McpServer as _McpServer
-    from lauren_mcp._client._stdio import McpCallError as _McpCallError
-    from lauren_mcp._types import ToolSchema as _ToolSchema, ToolResult as _ToolResult
 
     _LAUREN_MCP_AVAILABLE = True
-except ImportError:
+    _LAUREN_MCP_IMPORT_ERROR = ""
+except ImportError as _import_error:
     _LAUREN_MCP_AVAILABLE = False
-    _McpServer = _McpCallError = _ToolSchema = _ToolResult = None  # type: ignore[assignment,misc]
+    _LAUREN_MCP_IMPORT_ERROR = f"{type(_import_error).__name__}: {_import_error}"
+    _McpServer = _McpCallError = None  # type: ignore[assignment,misc]
 
 __all__ = [
     "McpToolSchema",
@@ -80,7 +89,13 @@ __all__ = [
     "AgenthiccMcpTool",
     "McpToolBridge",
     "McpToolRegistry",
+    "client_status",
 ]
+
+
+def client_status() -> McpClientStatus:
+    """Whether the MCP client library imported and meets the version floor (MCP-01)."""
+    return check_mcp_client(imported=_LAUREN_MCP_AVAILABLE, import_error=_LAUREN_MCP_IMPORT_ERROR)
 
 
 # ---------------------------------------------------------------------------
@@ -156,21 +171,17 @@ class AgenthiccMcpTool(Tool):
 
     async def execute(
         self,
-        args: dict[str, object],
-        context: dict[str, object],
-    ) -> object:
+        args: Mapping[str, object],
+        context: Mapping[str, object],
+    ) -> dict[str, object]:
         checker = self._catalog_revision_checker
         if callable(checker) and not checker(self.name, self.catalog_revision):
             raise McpStaleCatalogError(
                 f"MCP tool {self.name!r} belongs to a stale catalog revision"
             )
-        tool_call_id = context.get("tool_call_id", "")
         if self._safe_schema is not None and self._safe_schema.wrapped:
-            wrapped = args.get("value")
-            return await self._bridge.call_tool(
-                self._schema.name, wrapped, tool_call_id=tool_call_id
-            )
-        return await self._bridge.call_tool(self._schema.name, args, tool_call_id=tool_call_id)
+            return await self._bridge.call_tool(self._schema.name, args.get("value"))
+        return await self._bridge.call_tool(self._schema.name, args)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +227,7 @@ class McpToolBridge:
     ) -> None:
         self._cfg = config
         self._events = event_processor
-        self._client: object = None
+        self._client: McpClientProtocol | None = None
         self._lock = asyncio.Lock()
         self._connected = False
         self._change_callback: object = None
@@ -248,10 +259,11 @@ class McpToolBridge:
             if self._connected:
                 return
 
-            if not _LAUREN_MCP_AVAILABLE:
-                raise ImportError(
-                    "lauren_mcp is not installed. Install it with: pip install lauren-mcp"
-                )
+            # Before any attempt and outside the retry loop: a missing or unusable client is
+            # not a connection failure, and retrying it cannot help.
+            status = client_status()
+            if not status.available:
+                raise McpUnavailable(status)
 
             last_exc: Exception | None = None
             for attempt in range(self._cfg.reconnect_attempts + 1):
@@ -292,7 +304,7 @@ class McpToolBridge:
                 f"after {self._cfg.reconnect_attempts + 1} attempts: {last_exc}"
             )
 
-    async def _build_client(self) -> object:
+    async def _build_client(self) -> McpClientProtocol:
         """Instantiate (but do not connect) the appropriate McpServer client."""
         url = self._cfg.resolved_url()
         headers = self._cfg.resolved_headers() or None
@@ -306,29 +318,23 @@ class McpToolBridge:
                 checker(url)
 
         if transport == "stdio":
-            command = self._cfg.resolved_command()
-            kwargs: dict[str, object] = {
-                "max_retries": self._cfg.reconnect_attempts,
-                "startup_timeout": self._cfg.effective_startup_timeout_s,
-            }
+            # ``cwd``/``env`` need lauren-mcp 1.2.0+; ``check_mcp_client`` refuses older
+            # releases before any connection, so there is no fallback that could quietly
+            # launch the child with the parent's whole environment.
+            cwd: str | None = None
             if self._cfg.cwd:
-                cwd = Path(self._cfg.cwd)
-                if not cwd.is_absolute() and self._workspace_root is not None:
-                    cwd = self._workspace_root / cwd
-                kwargs["cwd"] = str(cwd.resolve())
-            if self._cfg.env or self._cfg.env_vars:
-                kwargs["env"] = self._cfg.resolved_env()
-            try:
-                client = _McpServer.stdio(command, **kwargs)
-            except TypeError:
-                # Older lauren-mcp releases accepted argv but not the newer
-                # cwd/env/startup-timeout options. Keep those releases
-                # import-compatible while the supported client receives the
-                # complete process policy above.
-                client = _McpServer.stdio(
-                    command,
-                    max_retries=self._cfg.reconnect_attempts,
-                )
+                cwd_path = Path(self._cfg.cwd)
+                if not cwd_path.is_absolute() and self._workspace_root is not None:
+                    cwd_path = self._workspace_root / cwd_path
+                cwd = str(cwd_path.resolve())
+            env = self._cfg.resolved_env() if (self._cfg.env or self._cfg.env_vars) else None
+            client = _McpServer.stdio(
+                self._cfg.resolved_command(),
+                max_retries=self._cfg.reconnect_attempts,
+                startup_timeout=self._cfg.effective_startup_timeout_s,
+                cwd=cwd,
+                env=env,
+            )
         elif transport == "ws":
             client = _McpServer.ws(
                 url,
@@ -369,9 +375,10 @@ class McpToolBridge:
 
     async def list_tools(self) -> list[McpToolSchema]:
         """Return all tools advertised by the connected MCP server."""
-        if not self._connected:
+        client = self._client
+        if not self._connected or client is None:
             raise McpToolCallError(f"Server {self._cfg.name!r} is not connected")
-        raw_tools = await self._client.list_tools()
+        raw_tools = await client.list_tools()
         if isinstance(raw_tools, Mapping):
             raw_tools = raw_tools.get("tools", [])
         if not isinstance(raw_tools, Sequence) or isinstance(raw_tools, (str, bytes)):
@@ -495,21 +502,16 @@ class McpToolBridge:
                 except Exception:  # noqa: BLE001
                     pass
 
-    async def _invoke_tool(self, tool_name: str, args: object, tool_call_id: str) -> object:
-        call = self._client.call_tool
-        try:
-            return await call(tool_name, args, tool_call_id=tool_call_id)
-        except TypeError as exc:
-            if "tool_call_id" not in str(exc) and "unexpected keyword" not in str(exc):
-                raise
-            return await call(tool_name, args)
+    async def _invoke_tool(self, tool_name: str, args: object) -> object:
+        client = self._client
+        if client is None:
+            raise McpToolCallError(f"Server {self._cfg.name!r} is not connected")
+        # ``args`` is the tool's arguments object. A server whose input schema is not an
+        # object is exposed wrapped as ``{value: …}`` and unwrapped by ``AgenthiccMcpTool``;
+        # the client sends whatever it is given as the JSON ``arguments`` value.
+        return await client.call_tool(tool_name, cast("dict[str, object] | None", args))
 
-    async def call_tool(
-        self,
-        tool_name: str,
-        args: object,
-        tool_call_id: str = "",
-    ) -> dict[str, object]:
+    async def call_tool(self, tool_name: str, args: object) -> dict[str, object]:
         """Call a remote tool and return its TOOLR-04 envelope (TOOLR-06).
 
         A server that is down gets one reconnect attempt per call; after
@@ -538,7 +540,7 @@ class McpToolBridge:
                 ) from exc
         try:
             result = await asyncio.wait_for(
-                self._invoke_tool(tool_name, args, tool_call_id),
+                self._invoke_tool(tool_name, args),
                 timeout=self._cfg.effective_tool_timeout_s,
             )
         except asyncio.TimeoutError:

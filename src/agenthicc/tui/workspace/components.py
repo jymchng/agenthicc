@@ -221,6 +221,8 @@ class _Inputs:
     workflow: tuple[str, int, int, str, str] | None
     workflow_stack_label: str
     staged_authored_sets: int
+    #: Enabled MCP servers that are failed or need sign-in (MCP-01).
+    mcp_attention: int
     startup: str
     terminal_count: int
     usage_status: str
@@ -284,6 +286,22 @@ def _static_parts(inputs: _Inputs) -> tuple[_Part, ...]:
         parts.append(
             _Part(2, (_form(escape(label) if reader else _tint("muted", f"{g.diamond} {label}")),))
         )
+
+    # 2. An enabled MCP server is failed or needs sign-in (MCP-01). Like the attention
+    # segment above it, a user status-line command does not replace it: it is an alert.
+    if inputs.mcp_attention:
+        if reader:
+            parts.append(_Part(2, (_form("an MCP server needs attention"),)))
+        else:
+            parts.append(
+                _Part(
+                    2,
+                    (
+                        _form(_tint("danger", f"mcp {g.fail}", bold=True)),
+                        _form(_tint("danger", g.fail, bold=True)),
+                    ),
+                )
+            )
 
     if inputs.user_line:
         # 3–7 replaced by the user's status-line command (TUX-02 §2.3).
@@ -632,6 +650,7 @@ class StatusLine:
             workflow=workflow,
             workflow_stack_label=stack_label,
             staged_authored_sets=_signal_int(conv, "staged_authored_sets"),
+            mcp_attention=_signal_int(conv, "mcp_attention"),
             startup=self._startup_text(),
             terminal_count=(
                 _signal_int(conv, "terminal_running_count")

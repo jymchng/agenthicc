@@ -25,7 +25,7 @@ its evidence. The checkout contains:
 | PRD/research docs | 192 | Historical and proposed product/design records |
 | Package version | `0.1.0` | Declared in `pyproject.toml:7` |
 | Supported Python | `>=3.11` | `pyproject.toml:10` |
-| Declared extras | `cloud`, `book`, `cloakbrowser`, `playwright`, `mcp`, `dev` | There is no `tui`, `api`, or `all` extra |
+| Declared extras | `cloud`, `book`, `cloakbrowser`, `playwright`, `dev` | There is no `tui`, `api`, or `all` extra |
 
 Passing local test counts are deliberately **not** recorded here: they change
 with every commit, they depend on how the suite is selected, and a stale number

@@ -1561,7 +1561,7 @@ def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent
     """Render one generation-scoped, redacted MCP startup outcome."""
     text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
     severity: Severity = "error" if bool(ev.payload.get("required", False)) else "warning"
-    _print_notice(self, severity, text, actions=("/mcp",))
+    _print_notice(self, severity, text, _text(ev.payload, "body", ""), actions=("/mcp",))
     self._blank()
 
 

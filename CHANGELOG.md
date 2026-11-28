@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — MCP works out of the box, or says exactly why not (MCP-01)
+
+- **Breaking.** `lauren-mcp[http,ws]` is now a base dependency and the `mcp` extra is
+  removed (`pip install 'agenthicc[mcp]'` no longer exists). The `lauren-ai[mcp]` pin it
+  carried is gone with it; nothing in agenthicc imports it.
+- A missing, broken or too-old MCP client is no longer a bare "unavailable". The
+  transcript notice names the cause and, in its body, the command that installs the
+  client into the interpreter running agenthicc. It is written once per startup, not
+  once per server.
+- `agenthicc mcp doctor` checks the client first and exits non-zero when it is unusable;
+  `mcp list --json` and `/mcp status` carry `client_available`, `reason` and `fix`; the
+  status line shows `mcp ✗` while an enabled server is `failed` or `needs_auth`.
+- The bridge calls the real client's signatures: `call_tool(name, arguments)` takes no
+  call id, and the stdio launch passes `cwd` and `env` without a `TypeError` fallback
+  that could start the child with the parent's whole environment.
+- CI now imports the real client, and `agenthicc.tools.mcp` is type-checked against
+  its types (the mypy `ignore_missing_imports` override is removed).
+- `tui.first_prompt.modules` budget raised from 377 to 400: `main` already measured 380
+  with the same environment, so this change does not move it.
+
 ### Added — agents message across pools and sessions (COMM-04, COMM-05)
 
 - A subagent can message a worker of a related pool (a sibling, an ancestor or a

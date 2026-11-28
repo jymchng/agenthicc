@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -81,6 +82,7 @@ def mcp_list(
 ) -> None:
     """List configuration without starting any MCP server."""
     from agenthicc.cli.mcp_config import McpConfigError
+    from agenthicc.tools.mcp_availability import check_mcp_client
 
     path = _selected_path(ctx, global_, project)
     try:
@@ -88,18 +90,25 @@ def mcp_list(
     except McpConfigError as exc:
         print(f"error: {exc}")
         return
+    # The check reads package metadata; it does not import the MCP client.
+    client = check_mcp_client()
     if json_:
-        print(json.dumps({"path": str(path), "servers": result}, sort_keys=True))
+        print(
+            json.dumps(
+                {"path": str(path), "client": client.to_dict(), "servers": result}, sort_keys=True
+            )
+        )
         return
     if not result:
         print(f"No MCP servers configured in {path}")
-        return
     for item in result:
         print(
             f"{item.get('name', '<invalid>')}: "
             f"transport={item.get('transport', 'unknown')} "
             f"enabled={item.get('enabled', True)}"
         )
+    if not client.available:
+        print(f"warning: {client.summary()}. Fix: {client.fix}", file=sys.stderr)
 
 
 def mcp_get(
@@ -214,7 +223,7 @@ async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> No
     result: list[dict[str, object]] | dict[str, object]
     try:
         manager = await _live_cli_manager(ctx)
-        result = await manager.doctor(name or None)
+        result = await manager.diagnostics(name or None)
         print(
             json.dumps(result, sort_keys=True)
             if json_
@@ -230,6 +239,12 @@ async def mcp_doctor(ctx: CLIContext, name: str = "", json_: bool = False) -> No
     finally:
         if manager is not None:
             await manager.shutdown()
+    # A diagnostics command that finds the MCP client unusable must fail, so scripts and CI
+    # notice; the printed ``client`` section names the cause and the command that fixes it.
+    from agenthicc.tools.mcp import client_status
+
+    if not client_status().available:
+        raise SystemExit(1)
 
 
 def mcp_auth(ctx: CLIContext, name: str) -> None:

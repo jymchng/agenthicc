@@ -137,7 +137,7 @@ help string the command registers.
 | `agents restore SESSION_ID` | Restore a deleted background agent |
 | `agents purge` | Permanently remove expired background trash |
 | `mcp add NAME URL [--project \| --global] [--transport KIND] [--token-env ENV_VAR] [--no-auto-connect] [--reconnect-attempts N] [--reconnect-delay-seconds N]` | Add an MCP server to configuration |
-| `mcp list [--project \| --global] [--json]` | List configured MCP servers |
+| `mcp list [--project \| --global] [--json]` | List configured MCP servers; `--json` adds a `client` section (`client_available`, `reason`, `fix`) |
 | `mcp get NAME [--project \| --global] [--json]` | Show one configured MCP server |
 | `mcp remove NAME [--project \| --global]` | Remove one configured MCP server |
 | `mcp connect NAME` | Connect to one MCP server and inspect its catalog |
@@ -145,7 +145,7 @@ help string the command registers.
 | `mcp refresh NAME` | Refresh one MCP server's tool catalog |
 | `mcp auth NAME` | Check configured MCP authentication |
 | `mcp logout NAME` | Remove stored MCP authentication |
-| `mcp doctor [NAME] [--json]` | Validate and diagnose MCP server connectivity |
+| `mcp doctor [NAME] [--json]` | Check the MCP client first, then each server; exits non-zero when the client is missing, broken or too old |
 | `perf report` | Run offline CLI, TUI startup, composer, spinner and idle-render diagnostics beside their budgets |
 | `sessions list [--page N] [--page-size N]` | On a terminal, open the agents hub's History tab (saved sessions with finished agents); piped, print one page of saved sessions |
 | `sessions show SESSION_ID` | Show detail for one session |

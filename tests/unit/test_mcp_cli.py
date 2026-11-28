@@ -230,3 +230,108 @@ def test_mcp_doctor_supports_optional_positional_name() -> None:
     namespace = parser.parse_args(argv)
     assert namespace.name == "remote"
     assert namespace.json_ is True
+
+
+# ── MCP-01: the client check is part of ``mcp list`` and ``mcp doctor`` ────────────────────
+
+
+def _unavailable_client() -> object:
+    from agenthicc.tools.mcp_availability import McpClientStatus
+
+    return McpClientStatus(
+        False, "dependency_missing", fix="python -m pip install 'lauren-mcp[http,ws]>=1.2.1,<2'"
+    )
+
+
+def _config_with_server(tmp_path: Path, **fields: str) -> Path:
+    config = tmp_path / "agenthicc.toml"
+    extra = "".join(f"{key} = {value}\n" for key, value in fields.items())
+    config.write_text(
+        '[[tools.mcp_servers]]\nname = "srv"\ntransport = "stdio"\ncommand = ["true"]\n' + extra,
+        encoding="utf-8",
+    )
+    return config
+
+
+def test_mcp_list_json_reports_the_client_state(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    import json
+
+    from agenthicc.cli.commands import mcp
+
+    monkeypatch.setattr(
+        "agenthicc.tools.mcp_availability.check_mcp_client", lambda **_: _unavailable_client()
+    )
+    config = _config_with_server(tmp_path)
+
+    mcp.mcp_list(CLIContext(config_path=str(config)), json_=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["client"]["client_available"] is False
+    assert payload["client"]["reason"] == "dependency_missing"
+    assert "lauren-mcp[http,ws]" in payload["client"]["fix"]
+    assert [server["name"] for server in payload["servers"]] == ["srv"]
+
+
+def test_mcp_list_text_warns_on_stderr_when_the_client_is_unusable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from agenthicc.cli.commands import mcp
+
+    monkeypatch.setattr(
+        "agenthicc.tools.mcp_availability.check_mcp_client", lambda **_: _unavailable_client()
+    )
+    config = _config_with_server(tmp_path)
+
+    mcp.mcp_list(CLIContext(config_path=str(config)))
+
+    captured = capsys.readouterr()
+    assert "srv: transport=stdio" in captured.out
+    assert "lauren-mcp is not installed" in captured.err and "Fix:" in captured.err
+
+
+def _hide_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _unavailable_client()
+    for target in (
+        "agenthicc.tools.mcp.client_status",
+        "agenthicc.tools.mcp_manager.client_status",
+    ):
+        monkeypatch.setattr(target, lambda: status)
+
+
+async def test_mcp_doctor_exits_nonzero_and_prints_the_fix_when_the_client_is_unusable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    import json
+
+    from agenthicc.cli.commands import mcp
+
+    _hide_client(monkeypatch)
+    config = _config_with_server(tmp_path, reconnect_attempts="0")
+
+    with pytest.raises(SystemExit) as exited:
+        await mcp.mcp_doctor(CLIContext(config_path=str(config)), json_=True)
+
+    assert exited.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert list(report) == ["client", "servers"]
+    assert report["client"]["client_available"] is False
+    assert report["client"]["fix"].startswith("python -m pip install")
+    assert report["servers"][0]["status"]["reason"] == "dependency_missing"
+
+
+async def test_mcp_doctor_succeeds_when_the_client_is_usable(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    import json
+
+    from agenthicc.cli.commands import mcp
+
+    config = _config_with_server(tmp_path, auto_connect="false")
+
+    await mcp.mcp_doctor(CLIContext(config_path=str(config)), json_=True)
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["client"]["client_available"] is True
+    assert report["client"]["fix"] == ""

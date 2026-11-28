@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import pytest
 
 from agenthicc.tools.mcp import McpStaleCatalogError, McpToolSchema
+from agenthicc.tools.mcp_availability import McpClientStatus, McpUnavailable
 
 from agenthicc.tools.mcp_server_config import McpServerConfig
 from agenthicc.tools.mcp_manager import (
@@ -26,6 +27,7 @@ class FakeBridge:
     config: McpServerConfig
     delay: float = 0.0
     fail: str | None = None
+    unavailable: McpClientStatus | None = None
 
     def __post_init__(self) -> None:
         self.server_name = self.config.name
@@ -38,6 +40,8 @@ class FakeBridge:
 
     async def connect(self) -> None:
         await asyncio.sleep(self.delay)
+        if self.unavailable is not None:
+            raise McpUnavailable(self.unavailable)
         if self.fail:
             raise RuntimeError(self.fail)
         self.is_connected = True
@@ -71,11 +75,9 @@ class FakeBridge:
     async def list_resources(self) -> list[object]:
         return [{"uri": "memory://resource"}]
 
-    async def call_tool(
-        self, name: str, arguments: dict[str, object], *, tool_call_id: str = ""
-    ) -> dict[str, object]:
+    async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, dict(arguments)))
-        return {"ok": True, "tool_call_id": tool_call_id}
+        return {"ok": True}
 
     def set_change_callback(self, callback: object) -> None:
         self.callback = callback
@@ -231,6 +233,49 @@ async def test_optional_failure_is_projected_once_into_the_tui_store() -> None:
     assert failures[0].payload["server"] == "asyncmove"  # type: ignore[attr-defined]
     assert failures[0].payload["generation_id"] == 1  # type: ignore[attr-defined]
     assert failures[1].payload["generation_id"] == 2  # type: ignore[attr-defined]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_the_status_badge_counts_enabled_servers_that_failed_or_need_sign_in() -> None:
+    """MCP-01 D3: ``mcp_attention`` follows the statuses, never a stale count."""
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    manager = McpSessionManager(
+        [_config("good"), _config("bad"), _config("off", enabled=False)],
+        conversation_store=store,
+        bridge_factory=_factory(bridges),
+    )
+    assert store.mcp_attention() == 0  # configured, not yet started
+
+    bridges["bad"].fail = "connection refused"
+    await manager.start_all()
+    assert store.mcp_attention() == 1  # the disabled server is not counted
+
+    bridges["bad"].fail = None
+    await manager.start_server("bad")
+    assert store.mcp_attention() == 0  # recovery clears it
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_client_raises_the_badge_for_every_server_but_one_notice() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    projected: list[object] = []
+    store.on_event(projected.append)
+    manager = McpSessionManager(
+        [_config("one"), _config("two")],
+        conversation_store=store,
+        bridge_factory=_factory(bridges),
+    )
+    missing = McpClientStatus(False, "dependency_missing", fix="python -m pip install x")
+    for bridge in bridges.values():
+        bridge.unavailable = missing
+    await manager.start_all()
+    assert store.mcp_attention() == 2
+    notices = [e for e in projected if getattr(e, "kind", "") == "mcp_server_failure"]
+    assert len(notices) == 1
     await manager.shutdown()
 
 
@@ -417,3 +462,134 @@ async def test_shutdown_is_idempotent_and_clears_visible_tools() -> None:
     assert manager.status("server")["status"] == McpServerState.STOPPED.value
     assert manager.status("server")["tool_count"] == 0
     assert bridges["server"].disconnect_count == 1
+
+
+# ── MCP-01: an unusable client library is one cause, reported once, with its fix ──────────
+
+_FIX = "python -m pip install 'lauren-mcp[http,ws]>=1.2.1,<2'"
+
+
+def _unavailable(reason: str = "dependency_missing", detail: str = "") -> McpClientStatus:
+    installed = "" if reason == "dependency_missing" else "1.1.0"
+    return McpClientStatus(False, reason, installed=installed, detail=detail, fix=_FIX)
+
+
+def _failure_notices(projected: list[object]) -> list[dict[str, object]]:
+    return [
+        dict(getattr(event, "payload", {}))
+        for event in projected
+        if getattr(event, "kind", "") == "mcp_server_failure"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_client_is_one_notice_naming_the_cause_and_the_fix() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    projected: list[object] = []
+    store.on_event(projected.append)
+    manager = McpSessionManager(
+        [_config("a"), _config("b"), _config("c")],
+        conversation_store=store,
+        bridge_factory=_factory(bridges),
+    )
+    for bridge in bridges.values():
+        bridge.unavailable = _unavailable()
+
+    await manager.start_all()
+
+    (notice,) = _failure_notices(projected)
+    assert "lauren-mcp is not installed" in str(notice["text"])  # the cause, on the same line
+    assert _FIX in str(notice["body"])
+    for name in ("a", "b", "c"):
+        status = manager.status(name)
+        assert status["status"] == McpServerState.FAILED.value
+        assert status["client_available"] is False
+        assert status["reason"] == "dependency_missing"
+        assert status["fix"] == _FIX
+        assert "lauren-mcp is not installed" in str(status["last_error"])
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_client_stops_startup_when_a_server_is_required() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    projected: list[object] = []
+    store.on_event(projected.append)
+    manager = McpSessionManager(
+        [_config("needed", required=True), _config("extra")],
+        conversation_store=store,
+        bridge_factory=_factory(bridges),
+    )
+    for bridge in bridges.values():
+        bridge.unavailable = _unavailable()
+
+    with pytest.raises(McpRequiredServerError) as raised:
+        await manager.start_all()
+
+    assert "lauren-mcp is not installed" in raised.value.failures["needed"]
+    notices = _failure_notices(projected)
+    assert 1 <= len(notices) <= 2  # a warning for the optional server, an error for the required
+    assert any(notice["required"] is True for notice in notices)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_the_cause_is_reported_again_for_each_startup_and_cleared_once_fixed() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    projected: list[object] = []
+    store.on_event(projected.append)
+    manager = McpSessionManager(
+        [_config("a")], conversation_store=store, bridge_factory=_factory(bridges)
+    )
+    bridges["a"].unavailable = _unavailable()
+
+    await manager.start_all()
+    await manager.reload_all()
+    assert len(_failure_notices(projected)) == 2  # one per startup generation, not one forever
+
+    bridges["a"].unavailable = None  # the operator installed the client
+    await manager.reload_all()
+
+    status = manager.status("a")
+    assert status["status"] == McpServerState.READY.value
+    assert status["client_available"] is True
+    assert status["reason"] == "" and status["fix"] == ""
+    assert len(_failure_notices(projected)) == 2
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_client_is_never_reported_as_an_authentication_failure() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    manager = McpSessionManager([_config("a")], bridge_factory=_factory(bridges))
+    # The cause text contains "401", which the auth-error text match treats as an auth failure.
+    bridges["a"].unavailable = _unavailable("dependency_broken", "ImportError: error 401")
+
+    await manager.start_all()
+
+    assert manager.status("a")["status"] == McpServerState.FAILED.value
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_puts_the_client_check_before_the_servers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridges: dict[str, FakeBridge] = {}
+    manager = McpSessionManager([_config("a")], bridge_factory=_factory(bridges))
+    monkeypatch.setattr("agenthicc.tools.mcp_manager.client_status", lambda: _unavailable())
+
+    result = await manager.diagnostics()
+
+    assert list(result) == ["client", "servers"]
+    client = result["client"]
+    assert isinstance(client, dict)
+    assert client["client_available"] is False
+    assert client["reason"] == "dependency_missing"
+    assert client["fix"] == _FIX
+    servers = result["servers"]
+    assert isinstance(servers, list) and servers[0]["server"] == "a"
+    await manager.shutdown()

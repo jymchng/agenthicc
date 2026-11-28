@@ -1,6 +1,6 @@
 ---
 title: "MCP-01: MCP works out of the box, or says exactly why it does not"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-28
 priority: P0
@@ -170,3 +170,26 @@ configuration values.
   MCP. Three small packages is the measured cost (row 8); the import is lazy.
 - If maintainers keep the extra, the incident above remains possible and D3 is the
   only protection. That is a decision, not an oversight, and should be recorded.
+
+## Implementation record
+
+Implemented on `fix/mcp-01-client-availability`.
+
+| Item | What shipped | Where |
+|---|---|---|
+| D1 | `lauren-mcp[http,ws]>=1.2.1,<2` is a base dependency. The `mcp` extra is **removed outright, with no empty alias**: this project is not in production and keeps no compatibility shims (the rollout note above suggested a one-release alias). The `lauren-ai[mcp]` pin it carried is gone; nothing imports it. | `pyproject.toml` |
+| D2 | `McpUnavailable` carries an `McpClientStatus` (`reason` is `dependency_missing`, `dependency_incompatible` or `dependency_broken`; `protocol_era_mismatch` is MCP-13's). `fix_command()` names `sys.executable` and the `uv pip install --python` equivalent. It is raised before the retry loop. | `tools/mcp_availability.py`, `tools/mcp.py` |
+| D3 | The notice names the cause and carries `Fix:` in its body, once per startup generation. `client_available`, `reason` and `fix` are on `McpServerStatus`, `/mcp status` and `mcp list --json` (as a `client` section). `mcp doctor` checks the client first and exits 1. The status line shows `mcp ✗` through `ConversationStore.mcp_attention`. | `tools/mcp_manager.py`, `cli/commands/mcp.py`, `tui/workspace/components.py` |
+| D4 | A missing client is a failed server like any other, so a `required = true` server stops startup. | `tools/mcp_manager.py` |
+| D5 | `dev` no longer needs the extra because the client is a base dependency, so CI imports it. The mypy override for `agenthicc.tools.mcp` is removed and `mypy src/agenthicc` passes against the library's types. `test_the_real_client_library_imports_and_meets_the_floor` fails if the import fails, and a second test keeps `REQUIREMENT` equal to `pyproject.toml`. | `tests/unit/test_mcp_availability.py` |
+
+Against the released client the bridge now calls the real signatures: `call_tool(name,
+arguments)` takes no call id, and the stdio launch passes `cwd` and `env` with no
+`TypeError` fallback (which could have started the child with the parent's whole
+environment; 1.2.0 added both arguments, so the floor is 1.2.1).
+
+Not done here: the headless/background worker event (D3, last row) reuses the same
+`mcp_server_failure` notice through the conversation store; a separate durable session
+event for `agenthicc agents` is not added. `tui.first_prompt.modules` measured 380 on
+`main` before this change (budget 377, 0% tolerance), so the budget was raised to 400 at
+the maintainer's direction rather than the lazy import being the cause.

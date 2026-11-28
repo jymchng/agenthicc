@@ -442,20 +442,12 @@ The internal identity `mcp:<server>:<tool>` is retained for MCP routing;
 the provider-facing schema uses a valid equivalent such as
 `mcp_database-dev_create_row`.
 
-MCP support is optional. Install it only for projects that configure MCP
-servers. The extra includes the stdio client plus the optional HTTP/SSE and
-WebSocket transport adapters; it does not install MCP dependencies for a base
-agenthicc installation:
-
-```bash
-pip install 'agenthicc[mcp]'
-# or, in a uv checkout:
-uv sync --extra mcp
-```
-
-Without this extra, configured servers remain visible in diagnostics and fail
-with an actionable optional-dependency status; ordinary agenthicc sessions do
-not require the MCP client package.
+The MCP client (`lauren-mcp` with the HTTP/SSE and WebSocket transports) is a
+base dependency: there is no extra to install, and it is not imported until a
+server is configured. In an environment that lacks it, configured servers stay
+visible in diagnostics and fail with the cause and the exact command that fixes
+it, and `agenthicc mcp doctor` exits non-zero. See
+[Connecting MCP servers](mcp.md).
 
 ## Optional CloakBrowser integration
 

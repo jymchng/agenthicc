@@ -189,7 +189,7 @@ That extra is what provides `pytest`, `pytest-asyncio`, `pytest-timeout`,
 |---|---|---|
 | Tests pass locally and fail in CI | CI runs the Nox sessions, which may add flags | Reproduce with the session, e.g. `nox -s tests` or `nox -s tests_unit` |
 | An async test never runs | Missing the async plugin marker | The dev extra provides `pytest-asyncio`; keep the project's own asyncio configuration rather than adding per-file event loops |
-| `ModuleNotFoundError` for an optional integration | The optional extra is not installed | Install the matching extra (`mcp`, `playwright`, `cloakbrowser`, `cloud`, `book`) or skip the focused test |
+| `ModuleNotFoundError` for an optional integration | The optional extra is not installed | Install the matching extra (`playwright`, `cloakbrowser`, `cloud`, `book`) or skip the focused test |
 | A test hangs forever | A missing timeout | `pytest-timeout` is in the dev extra; give subprocess and terminal tests an explicit bound |
 | A test depends on real network access | A live provider was called | Use cassettes and the recording approval services instead of reaching the network |
 | A test asserts against the TUI's old rendered-frame contract | The `render_frame_ansi`/`pyte` contract is historical and removed | Assert on structured state (`tui/conversation_store.py`), not on rendered frames |
