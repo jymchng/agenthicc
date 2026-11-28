@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.skills.loader import SkillDef
+    from agenthicc.background.session_messages import SessionMessenger
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.session_service import SessionService
     from agenthicc.runners.usage_ledger import UsageLedger
@@ -126,6 +127,10 @@ class SessionContext:
     # ── optional browser integration (PRD-159) ─────────────────────────────
     browser_manager: "BrowserSessionManager | None" = None
     browser_tools: "Iterable[ToolLike]" = field(default_factory=tuple)
+
+    # ── messaging other sessions (COMM-05) ──────────────────────────────────
+    #: ``None`` when ``[sessions] agent_messaging`` is off or background sessions are.
+    session_messenger: "SessionMessenger | None" = None
 
     # ── invocation configuration ────────────────────────────────────────────
     cfg_overrides: tuple[str, ...] = ()

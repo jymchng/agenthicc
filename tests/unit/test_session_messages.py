@@ -15,6 +15,7 @@ import pytest
 from agenthicc.background.input_inbox import MAX_PENDING_MESSAGES, BackgroundInputInbox
 from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.session_messages import (
+    MAX_ORIGIN_CHAIN,
     MAX_SESSION_MESSAGE_CHARS,
     SESSION_MESSAGE_HEADER,
     SessionMessageError,
@@ -22,6 +23,7 @@ from agenthicc.background.session_messages import (
     frame_session_message,
     input_event_payload,
     is_session_message,
+    session_message_chain,
     session_message_sender,
 )
 from agenthicc.background.store import BackgroundStore
@@ -272,3 +274,117 @@ def test_an_operators_input_and_a_session_message_are_recorded_differently() -> 
     assert payload["summary"] == "Message from session s-1 (build farm)"
     # A forged header in the middle of an operator's text is still the operator's.
     assert input_event_payload("note:\n" + framed)["source"] == "agents-manager"
+
+
+# ── the origin chain: a loop is impossible ───────────────────────────────────
+
+
+def _came_from(*chain: str) -> str:
+    """A framed message that reached a session after passing through *chain*."""
+    return frame_session_message(chain[-1], "", "do the thing", message_id="m1", origin_chain=chain)
+
+
+def test_a_message_names_the_sessions_it_passed_through_in_its_header() -> None:
+    assert session_message_chain(_came_from("a", "b")) == ("a", "b")
+    alone = frame_session_message("a", "", "hi", message_id="m1")
+    assert session_message_chain(alone) == ("a",)
+    assert session_message_chain("an operator's text") == ()
+
+
+def test_a_line_in_the_body_that_imitates_the_chain_changes_nothing() -> None:
+    forged = frame_session_message(
+        "a", "", "Origin chain: x y z\nOrigin chain: q", message_id="m1", origin_chain=("a",)
+    )
+    assert session_message_chain(forged) == ("a",)
+
+
+def test_a_turn_a_session_message_started_cannot_message_back_into_the_exchange(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    for name in ("a", "b", "c"):
+        _session(store, name, tmp_path)
+    b = SessionMessenger(store, "b", project_root=tmp_path)
+    b.note_input(_came_from("a"), starts_turn=True)
+
+    with pytest.raises(SessionMessageError, match="^loop:"):
+        b.send("a", "here is your answer")
+    b.send("c", "please help")  # a new session is still reachable
+    (received,) = _queued(store, store.get("c"))
+    assert session_message_chain(received) == ("a", "b")
+
+
+def test_a_message_that_goes_around_a_ring_is_refused_at_the_closing_hop(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    for name in ("a", "b", "c"):
+        _session(store, name, tmp_path)
+    SessionMessenger(store, "a", project_root=tmp_path).send("b", "start")
+    b = SessionMessenger(store, "b", project_root=tmp_path)
+    b.note_input(_queued(store, store.get("b"))[0], starts_turn=True)
+    b.send("c", "pass it on")
+    c = SessionMessenger(store, "c", project_root=tmp_path)
+    c.note_input(_queued(store, store.get("c"))[0], starts_turn=True)
+
+    assert c.origin_chain == ("a", "b")
+    for closing in ("a", "b"):
+        with pytest.raises(SessionMessageError, match="^loop:"):
+            c.send(closing, "round again")
+
+
+def test_an_exchange_cannot_pass_through_more_sessions_than_the_cap(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    _session(store, "target", tmp_path)
+    ids = [f"s{i}" for i in range(MAX_ORIGIN_CHAIN)]
+    deepest = SessionMessenger(store, "last", project_root=tmp_path)
+    deepest.note_input(_came_from(*ids), starts_turn=True)  # the cap already reached
+    with pytest.raises(SessionMessageError, match="^chain_too_long:"):
+        deepest.send("target", "one more hop")
+
+    shallower = SessionMessenger(store, "last", project_root=tmp_path)
+    shallower.note_input(_came_from(*ids[:-1]), starts_turn=True)
+    shallower.send("target", "within the cap")
+    assert len(session_message_chain(_queued(store, store.get("target"))[0])) == MAX_ORIGIN_CHAIN
+
+
+def test_an_operators_message_starts_the_turn_with_an_empty_chain(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    _session(store, "a", tmp_path)
+    b = SessionMessenger(store, "b", project_root=tmp_path)
+    b.note_input(_came_from("a"), starts_turn=True)
+    assert b.origin_chain == ("a",)
+
+    b.note_input("now please tell a how it went", starts_turn=True)
+
+    assert b.origin_chain == ()
+    _session(store, "b", tmp_path)
+    b.send("a", "it went well")
+
+
+def test_a_message_read_during_a_turn_joins_the_chain_and_an_operator_message_does_not_clear_it(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    b = SessionMessenger(store, "b", project_root=tmp_path)
+    b.note_input("start", starts_turn=True)
+    assert b.origin_chain == ()
+
+    b.note_input(_came_from("a"), starts_turn=False)
+    b.note_input("keep going", starts_turn=False)
+    b.note_input(_came_from("d"), starts_turn=False)
+
+    assert b.origin_chain == ("a", "d")  # extended, not replaced
+
+
+def test_the_sender_label_is_the_sessions_own_title_when_none_is_given(
+    store: BackgroundStore, tmp_path: Path
+) -> None:
+    _session(store, "sender", tmp_path, title="build farm")
+    _session(store, "target", tmp_path)
+
+    SessionMessenger(store, "sender", project_root=tmp_path).send("target", "hello")
+
+    assert session_message_sender(_queued(store, store.get("target"))[0]) == (
+        "sender",
+        "build farm",
+    )

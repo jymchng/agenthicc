@@ -1996,6 +1996,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             delivered_input_ids.add(message_id)
             from agenthicc.background.session_messages import input_event_payload
 
+            if session.session_messenger is not None:
+                # COMM-05: what this turn's sends may reach depends on where its input came from.
+                session.session_messenger.note_input(text, starts_turn=starts_turn)
             session.app_state.conversation.append_event(
                 "user_message", input_event_payload(text), event_id=message_id
             )

@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from agenthicc.background.agents_service import AgentsService
     from agenthicc.tui.notifications import NotificationSink, TerminalPresence, TurnNotifier
     from agenthicc.background.attention import TUIAttentionLease
+    from agenthicc.background.session_messages import SessionMessenger
     from agenthicc.background.settings import BackgroundSettings
     from agenthicc.background.supervisor import BackgroundSupervisor
     from agenthicc.background.terminals import TerminalManager
@@ -1518,6 +1519,21 @@ async def _build_session_context_impl(
         browser_manager = None
         browser_tools = ()
 
+    # COMM-05: the agent may message the other live sessions of this project, through
+    # the same store its background workers use. Without background sessions there is
+    # nothing to address, so no messenger and no tools.
+    session_messenger: SessionMessenger | None = None
+    if (
+        cfg.sessions.agent_messaging
+        and background_settings.enabled
+        and os.environ.get("AGENTHICC_DISABLE_BACKGROUND", "") != "1"
+    ):
+        from agenthicc.background.session_messages import SessionMessenger
+
+        session_messenger = SessionMessenger(
+            BackgroundStore(background_root), session_id, project_root=Path.cwd()
+        )
+
     from agenthicc.runners.usage_ledger import UsageLedger
 
     def _legacy_token_events() -> Iterator[object]:
@@ -1673,6 +1689,7 @@ async def _build_session_context_impl(
         usage_ledger=usage_ledger,
         browser_manager=cast("BrowserSessionManager | None", browser_manager),
         browser_tools=cast("Iterable[ToolLike]", browser_tools),
+        session_messenger=session_messenger,
         cfg_overrides=tuple(cli_overrides or ()),
         cfg_secret_overrides=tuple(cli_secret_overrides or ()),
         initial_workflow=initial_workflow,
