@@ -1463,6 +1463,41 @@ def test_the_raw_comparison_guard_catches_a_reintroduced_comparison() -> None:
     ("profile", "expected"),
     [
         ("accessibility_audit", True),
+        ("Accessibility-Audit", True),
+        ("a11y", True),
+        ("broad", False),
+        ("targeted", False),
+        # An unusable stored value must not silently claim to be an audit.
+        ("", False),
+    ],
+)
+def test_the_visual_audit_annotation_flag_uses_the_normalised_profile(
+    tmp_path: Path, profile: str, expected: bool
+) -> None:
+    """The phase context handed to the agent carries the normalised answer.
+
+    This is the annotation the audit phase reads to decide whether it may
+    implement anything; before PRD-265 it was the last place a raw
+    ``route_profile`` was compared against a route name.
+    """
+    runner = _make_runner(tmp_path)
+    context = UiUxProMaxContext(intent="intent", run_id="run", route_profile=profile)
+
+    rendered = runner._phase_context(context, "visual_ux_audit")
+    header, _, body = rendered.partition("\n")
+    assert header == "[DYNAMIC WORKFLOW CONTEXT: VISUAL_UX_AUDIT]"
+    payload = json.loads(body)
+
+    # Phase-specific keys are merged into the top level by _phase_context.
+    assert payload["accessibility_audit_only"] is expected
+    # The scope echoed to the model stays canonical, whatever was stored.
+    assert payload["scope"] == normalise_route_profile(profile)[0]
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("accessibility_audit", True),
         ("accessibility", True),
         ("a11y", True),
         ("Accessibility-Audit", True),

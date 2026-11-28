@@ -1177,7 +1177,9 @@ class UiUxProMaxRunner(BaseWorkflowRunner):
         common: dict[str, object] = {
             "request": context.intent,
             "project_root": context.project_root,
-            "scope": context.route_profile,
+            # Echo the canonical profile: the model must never see a raw or
+            # aliased spelling that no topology can resolve.
+            "scope": normalise_route_profile(context.route_profile)[0],
             "product_brief": {
                 "project": context.project_name,
                 "product_type": context.project_type,
