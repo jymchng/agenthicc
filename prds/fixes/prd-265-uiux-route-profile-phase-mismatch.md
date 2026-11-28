@@ -1,6 +1,6 @@
 ---
 title: "PRD-265: Make the UI/UX Pro Max Route Profile a Validated Enum Instead of a Free-Text Field"
-status: Proposed
+status: Implemented
 version: 1.0.0
 date: 2026-11-28
 repository: jymchng/agenthicc
@@ -443,3 +443,39 @@ invariant is unit-testable without `_run_phase`, a provider, or a TUI.
 - The `saved checkpoint → resume` failure is demonstrated directly
   (`from_checkpoint_payload` on the recorded fields); the end-to-end
   `/workflow resume` path was not driven interactively.
+
+## Implementation record
+
+Implemented on `fix/prd-265-uiux-route-profile` (the work began on
+`fix/uiux-route-profile-265`; the commits are the same).
+
+| FR | What shipped | Where |
+|---|---|---|
+| FR-1 | `normalise_route_profile()` and `ROUTE_PROFILE_ALIASES`; every site that compared a raw profile now calls it, including `resolve_checkpoint_topology` (the first commit left that one, and the second closed it) | `state.py`, `runner.py`, `definition.py` |
+| FR-2 | The next state after each phase comes from a profile-to-state table through pure `next_state_after_*` helpers, and `ensure_phase_is_active` checks the result against the profile's tuple | `runner.py` |
+| FR-3 | `phase_index_in` replaces every unguarded `phases.index(...)` and raises `PhaseTopologyError` naming the workflow, phase, profile and scheduled phases | `runner.py`, `state.py` |
+| FR-4 | The tool docstring and the phase prompt name `details["scope"]` and its values; `classification`, `route_profile` and `profile` are accepted aliases | `phase_tools.py`, `runner.py` |
+| FR-5 | A checkpoint restores `""`, `None` or an unknown string as `broad` and records the fallback; only a non-string type is rejected; the writer rewrites the canonical value | `state.py` |
+| FR-6 | `PhaseTopologyError.failure_kind = "configuration"`, honoured by `_workflow_failure_kind` by type rather than by wording | `state.py`, `tui_session.py` |
+| FR-7 | `route_profile_fallback_*` on the context, `WorkflowRun.diagnostic`, and a Workflow row in `/status` | `state.py`, `plugin.py`, `statusline.py` |
+| FR-8 | The transition is a pure function of the context | `runner.py` |
+
+Beyond the NFR's file list: `workflows/plugin.py` and `tui/statusline.py` changed for FR-7,
+which needs a place to show the diagnostic.
+
+Checked against the PRD's reproduction, run on `main` and on the fix. On `main`, `""`,
+`"Broad"`, `"a11y"` and a payload with only `classification` all route to
+`TARGETED_DESIGN_RESEARCH`, which the active tuple does not contain, and the boundary
+raises `ValueError: tuple.index(x): x not in tuple`; the checkpoint with `route_profile: ""`
+raises "unknown route profile". On the fix every one of those lands on a phase in the
+tuple, and the checkpoint restores as `broad`.
+
+Judgement calls and limits:
+
+- An unrecognised word such as `"narrow"` becomes `broad`, the 11-phase route, with the
+  fallback recorded. That is what the PRD specifies and what `_active_phases` already did;
+  it can run more phases than a narrow request needs.
+- Acceptance criterion 2 in the PRD contains a garbled line (`base - argument`); it was
+  read as "for every profile and every state its edges can reach".
+- The recorded session replay (acceptance 7) and an interactive `/workflow resume` of the
+  two paused runs were not driven here; the PRD's own evidence note says the same.
